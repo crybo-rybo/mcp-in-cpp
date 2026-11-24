@@ -77,40 +77,31 @@ Scrydantic is fetched at configure time, pinned to its 0.4.0 release.
 
 ## Build and test
 
-```sh
-cmake --workflow --preset dev      # configure, build, and run the tests
-cmake --workflow --preset asan     # the same under the address and UB sanitizers
-cmake --workflow --preset tsan     # the same under the thread sanitizer (Linux)
-```
-
-Set `CXX` on the first configure if `g++` is not GCC 16.2.
-
-The sources follow `.clang-format`, as clang-format 22.1.4 applies it, which
-CI checks:
+`scripts/ci.sh` runs everything CI runs, so a change can be checked before it
+is pushed:
 
 ```sh
-git ls-files '*.cpp' '*.hpp' | xargs clang-format -i
+scripts/ci.sh                # format, then release, asan, and tsan
+scripts/ci.sh release        # format and one preset
 ```
 
-`tests/interop/python_client.py` drives the example server through the official
-Python client, under the modern revision and under the handshake, over stdio
-and over HTTP:
+Each step is a script of its own, and CI runs the same scripts:
 
-```sh
-pip install mcp
-python tests/interop/python_client.py build/dev/examples/mcp_weather_example
-```
+| Script | What it does |
+|---|---|
+| `scripts/format.sh [--fix]` | Checks the C++ sources against `.clang-format` with clang-format 22.1.4, or formats them |
+| `scripts/build.sh <preset>` | Configures, builds, and runs the tests of `dev`, `release`, `asan`, or `tsan` |
+| `scripts/interop.sh <preset>` | Drives the example server through the official Python client (mcp 2.3.0), over stdio and HTTP, in both eras |
+| `scripts/install-check.sh <preset>` | Installs the package, and builds and runs `tests/install` against it |
+| `scripts/conformance.sh <preset>` | Runs the official [conformance suite](https://github.com/modelcontextprotocol/conformance) against `tests/conformance/fixture.cpp`, under 2026-07-28 and 2025-11-25 |
 
-`tests/conformance/run.sh` runs the official
-[conformance suite](https://github.com/modelcontextprotocol/conformance)
-against `tests/conformance/fixture.cpp` over HTTP, under 2026-07-28 and under
-2025-11-25. The scenarios that fail, each for a feature not built yet, are
-listed in the `expected-failures` files beside it, and a run fails on any
-other failure, or on a listed one that passes. It needs Node 22 or newer:
-
-```sh
-tests/conformance/run.sh build/dev/tests/mcp_conformance_fixture
-```
+The scripts use `g++-16` when `g++` is not GCC 16, or the compiler `CXX`
+names. They install clang-format and the Python SDK into `build/tools` the
+first time, with `python3` or the Python `PYTHON` names. The conformance
+suite needs Node 22 or newer, and fails on any scenario its baseline in
+`tests/conformance/expected-failures.*.yml` does not list, or on a listed one
+that passes. Homebrew's GCC has no thread sanitizer, so on macOS
+`scripts/ci.sh` leaves tsan out unless it is named.
 
 ## Use it in a project
 

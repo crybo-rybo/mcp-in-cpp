@@ -18,20 +18,15 @@ defaults:
     shell: bash
 
 jobs:
-  # Every C++ source as .clang-format has it, with the clang-format the
-  # sources were formatted with.
+  # Each step runs a script of scripts/, which scripts/ci.sh runs together
+  # locally. CI only provides what the scripts need.
+  #
+  # Every C++ source as .clang-format has it, with clang-format 22.1.4.
   format:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - name: Install clang-format
-        run: |
-          python3 -m venv "$RUNNER_TEMP/format"
-          "$RUNNER_TEMP/format/bin/pip" install --quiet clang-format==22.1.4
-      - name: Check the formatting
-        run: |
-          git ls-files -z '*.cpp' '*.hpp' |
-            xargs -0 "$RUNNER_TEMP/format/bin/clang-format" --dry-run --Werror
+      - run: scripts/format.sh
   # The official GCC image, pinned by digest: the same one Scrydantic's CI
   # builds in. GitHub's runners have no GCC 16 of their own.
   test:
@@ -52,24 +47,15 @@ jobs:
           apt-get update -o Acquire::Retries=5
           apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
             cmake ninja-build python3-venv
-      - run: cmake --workflow --preset ${{ matrix.preset }}
-      # The example server, driven by the official Python client in both
-      # protocol eras.
+      - run: scripts/build.sh ${{ matrix.preset }}
+      # The example server, driven by the official Python client over stdio
+      # and HTTP, in both protocol eras.
       - name: Interoperate with the Python SDK
-        run: |
-          python3 -m venv build/venv
-          build/venv/bin/pip install --quiet mcp==2.3.0
-          build/venv/bin/python tests/interop/python_client.py \
-            build/${{ matrix.preset }}/examples/mcp_weather_example
+        run: scripts/interop.sh ${{ matrix.preset }}
       # The installed package, used by a project of its own.
       - name: Install and use the package
         if: matrix.preset == 'release'
-        run: |
-          cmake --install build/release --prefix "$PWD/build/prefix"
-          cmake -S tests/install -B build/consumer -G Ninja \
-            -DCMAKE_PREFIX_PATH="$PWD/build/prefix"
-          cmake --build build/consumer
-          build/consumer/consumer
+        run: scripts/install-check.sh release
       # The official conformance suite against the fixture server, in both
       # revisions, with a baseline of what the library does not do yet. It
       # needs a newer Node than Debian's.
@@ -86,11 +72,11 @@ jobs:
           node --version
       - name: Conformance
         if: matrix.preset == 'release'
-        run: tests/conformance/run.sh build/release/tests/mcp_conformance_fixture
+        run: scripts/conformance.sh release
       - name: Keep the conformance results
         if: always() && matrix.preset == 'release'
         uses: actions/upload-artifact@v7
         with:
           name: conformance-results
-          path: conformance-results
+          path: build/conformance-results
           if-no-files-found: ignore
