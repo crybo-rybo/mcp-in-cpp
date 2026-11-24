@@ -2,7 +2,11 @@
 // become, and which mistakes in a request are the protocol's to report.
 #include "support.hpp"
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <cstddef>
+#include <memory>
+#include <span>
 #include <mcp/mcp.hpp>
 #include <optional>
 #include <string>
@@ -202,4 +206,74 @@ TEST_CASE("a parameter the server supplies is not in the tool's input schema") {
           R"({"additionalProperties":false,"properties":{},"required":[],"type":"object"})");
     }
   }
+}
+
+namespace media {
+
+[[= mcp::tool{"Show a picture and say what it is"}]] inline mcp::Content picture() {
+  const std::array<std::byte, 3> png{std::byte{0x89}, std::byte{'P'}, std::byte{'N'}};
+  return {mcp::TextContent{"a picture:"}, mcp::image(png, "image/png"),
+          mcp::EmbeddedResource{mcp::text_resource("test://note", "a note")},
+          mcp::ResourceLink{.uri = "test://more", .name = "more"}};
+}
+
+[[= mcp::tool{"Play a sound, or refuse"}]] inline mcp::Result<mcp::Content>
+    sound(const bool play) {
+  if (!play) {
+    return std::unexpected(mcp::tool_error("not now"));
+  }
+  return mcp::Content{mcp::audio(std::as_bytes(std::span{"hi", 2}), "audio/wav")};
+}
+
+[[= mcp::tool{"Add two integers"}]] inline std::int32_t add(std::int32_t a,
+                                                            std::int32_t b) {
+  return a + b;
+}
+
+struct Gallery {
+  [[= mcp::tool{"Describe the gallery"}]] mcp::Content describe() const {
+    return {mcp::TextContent{"empty"}};
+  }
+};
+
+} // namespace media
+
+TEST_CASE("a tool that returns content sends its blocks, with no output schema") {
+  mcp::Server server{"sample", "0.0.1"};
+  server.add<^^media>();
+  mcp::Connection connection{server};
+
+  const std::optional<std::string> listed = connection.handle(modern("1", "tools/list"));
+  REQUIRE(listed.has_value());
+  // `add` keeps its output schema; the content tools have none.
+  CHECK(listed->find(R"("name":"picture","outputSchema")") == std::string::npos);
+  CHECK(listed->find(R"("name":"sound","outputSchema")") == std::string::npos);
+  CHECK(listed->find(R"("name":"add","outputSchema")") != std::string::npos);
+
+  CHECK(connection.handle(modern("2", "tools/call", R"("name":"picture")")) ==
+        called("2", R"("content":[{"text":"a picture:","type":"text"},)"
+                    R"({"data":"iVBO","mimeType":"image/png","type":"image"},)"
+                    R"({"resource":{"mimeType":"text/plain","text":"a note","uri":"test://note"},)"
+                    R"("type":"resource"},{"name":"more","type":"resource_link","uri":"test://more"}],)"
+                    R"("isError":false)"));
+  CHECK(connection.handle(modern("3", "tools/call", R"("name":"sound","arguments":{"play":true})")) ==
+        called("3", R"("content":[{"data":"aGk=","mimeType":"audio/wav","type":"audio"}],"isError":false)"));
+  CHECK(connection.handle(modern("4", "tools/call", R"("name":"sound","arguments":{"play":false})")) ==
+        called("4", text_content("not now", true)));
+}
+
+TEST_CASE("a toolbox's tool may return content too") {
+  mcp::Server server{"sample", "0.0.1"};
+  server.add(std::make_shared<const media::Gallery>());
+  mcp::Connection connection{server};
+  CHECK(connection.handle(modern("1", "tools/call", R"("name":"describe")")) ==
+        called("1", text_content("empty", false)));
+}
+
+TEST_CASE("base64 spells every length of input") {
+  CHECK(mcp::base64("") == "");
+  CHECK(mcp::base64("f") == "Zg==");
+  CHECK(mcp::base64("fo") == "Zm8=");
+  CHECK(mcp::base64("foo") == "Zm9v");
+  CHECK(mcp::base64("foobar") == "Zm9vYmFy");
 }

@@ -10,7 +10,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <expected>
 #include <functional>
+#include <mcp/content.hpp>
 #include <memory>
 #include <meta>
 #include <optional>
@@ -113,6 +115,40 @@ struct Context {
   std::stop_token stop{};
 };
 
+namespace detail {
+
+// Whether a function's return type is mcp::Content, or a Result of it.
+consteval bool returns_content(const std::meta::info function) {
+  const std::meta::info type =
+      std::meta::dealias(std::meta::remove_cvref(std::meta::return_type_of(function)));
+  const std::meta::info content = std::meta::dealias(^^Content);
+  if (type == content) {
+    return true;
+  }
+  if (std::meta::has_template_arguments(type) &&
+      std::meta::template_of(type) == ^^std::expected) {
+    return std::meta::dealias(std::meta::template_arguments_of(type)[0]) == content;
+  }
+  return false;
+}
+
+// For each tool that binding `entity` binds, in order: whether it returns
+// mcp::Content. `entity` is a namespace, a toolbox class, or one function.
+consteval std::vector<bool> content_results(const std::meta::info entity) {
+  std::vector<bool> marks;
+  if (std::meta::is_namespace(entity) || std::meta::is_class_type(entity)) {
+    for (const std::meta::info function :
+         scrydantic::annotated_functions_of(entity, ^^scrydantic::tool)) {
+      marks.push_back(returns_content(function));
+    }
+  } else {
+    marks.push_back(returns_content(entity));
+  }
+  return marks;
+}
+
+} // namespace detail
+
 /// What an MCP server offers: its identity and its tools.
 ///
 /// Set a server up, then serve it. A Connection reads a server and never
@@ -145,7 +181,9 @@ public:
   template <std::meta::info Entity,
             typename Tools = typename[:scrydantic::tools_of(Entity, ^^Context):]>
   Server& add() {
-    return add(scrydantic::bind<Entity, Context, Tools>());
+    static constexpr std::span<const bool> content =
+        std::define_static_array(detail::content_results(Entity));
+    return add_bound(scrydantic::bind<Entity, Context, Tools>(), content);
   }
 
   /// Adds the tool member functions of a shared object, which lives as long as
@@ -155,11 +193,13 @@ public:
   template <typename Toolbox, typename Tools = typename[:scrydantic::toolbox_tools_of(
                                                              ^^Toolbox, ^^Context):]>
   Server& add(std::shared_ptr<Toolbox> toolbox) {
-    return add(scrydantic::bind<Context, Toolbox, Tools>(std::move(toolbox)));
+    static constexpr std::span<const bool> content =
+        std::define_static_array(detail::content_results(^^Toolbox));
+    return add_bound(scrydantic::bind<Context, Toolbox, Tools>(std::move(toolbox)), content);
   }
 
   /// Adds tools that are already bound, such as one built by hand around
-  /// scrydantic::bind_handler().
+  /// scrydantic::bind_handler(). Their results are values, never mcp::Content.
   Server& add(std::vector<scrydantic::BoundTool<Context>> tools);
 
   /// Whether the server can be served. It cannot when two of its tools share a
@@ -179,6 +219,11 @@ public:
 private:
   friend class Connection;
 
+  // Adds bound tools. `content` says for each whether it returns mcp::Content,
+  // or is empty when none does.
+  Server& add_bound(std::vector<scrydantic::BoundTool<Context>> tools,
+                    std::span<const bool> content);
+
   // Writes the tool lists again after the tools changed.
   void write_tool_lists();
 
@@ -196,6 +241,8 @@ private:
   // For each tool, by its position: whether a legacy client is sent its
   // result as structured content.
   std::vector<bool> legacy_structured_{};
+  // For each tool, by its position: whether it returns mcp::Content.
+  std::vector<bool> content_{};
 };
 
 /// The protocol, for one client.

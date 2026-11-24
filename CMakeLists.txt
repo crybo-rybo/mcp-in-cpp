@@ -94,7 +94,7 @@ endif()
 
 # The protocol is compiled once, here. A server's own source includes the
 # headers, where only the templates that bind its tools are.
-add_library(mcp STATIC src/http.cpp src/server.cpp src/stdio.cpp)
+add_library(mcp STATIC src/content.cpp src/http.cpp src/server.cpp src/stdio.cpp)
 add_library(mcp::mcp ALIAS mcp)
 target_include_directories(
   mcp

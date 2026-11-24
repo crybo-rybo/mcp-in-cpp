@@ -44,7 +44,7 @@ change.
 |---|---|
 | Protocol | MCP 2026-07-28, served statelessly, and the `initialize` handshake of 2025-11-25 and 2025-06-18. One server speaks both to whichever client connects. |
 | Methods | `server/discover`, `tools/list`, `tools/call`, `subscriptions/listen` (acknowledged; a server's tools do not change while it runs), and for a handshake session `initialize` and `ping`. |
-| Tool results | Text content, and structured content with the tool's output schema. A returned string is sent as the text itself. |
+| Tool results | Text content, and structured content with the tool's output schema. A returned string is sent as the text itself. A tool that returns `mcp::Content` sends its blocks as they are: text, images, audio, embedded resources, and resource links. |
 | Tool failures | Arguments that do not decode and a tool's own refusal are tool errors with the text meant for the model. A tool that throws, or whose result breaks its own schema, is a tool error that says only `the tool failed`; the reason goes to the server's log. An unknown tool or a malformed call is a JSON-RPC error. |
 | Progress | A tool takes an `mcp::Progress` parameter in any position. It is not in the input schema, and its reports reach a client that sent a progress token. |
 | Cancellation | A tool takes a `std::stop_token` parameter in any position, or reads `mcp::Context::stop`. It stops when the client cancels the call, and a cancelled call gets no response. |

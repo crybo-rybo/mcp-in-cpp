@@ -96,7 +96,9 @@ struct TextContent {
 struct[[ = rename_all{camel_case}, = skip_null ]] CallToolResult {
   [[= name{"_meta"}]] std::optional<ResultMeta> meta;
   std::optional<std::string> result_type;
-  std::vector<TextContent> content;
+  // The content blocks, as JSON text: the server's own text block, or what a
+  // tool that returns mcp::Content wrote.
+  Json content{.text = "[]"};
   std::optional<Json> structured_content;
   bool is_error{};
 };

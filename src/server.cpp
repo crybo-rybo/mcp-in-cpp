@@ -159,8 +159,26 @@ Server& Server::log(Log sink) {
 }
 
 Server& Server::add(std::vector<scrydantic::BoundTool<Context>> tools) {
+  return add_bound(std::move(tools), {});
+}
+
+Server& Server::add_bound(std::vector<scrydantic::BoundTool<Context>> tools,
+                          const std::span<const bool> content) {
   if (problem_.has_value()) {
     return *this;
+  }
+  if (!content.empty() && content.size() != tools.size()) {
+    problem_ = scrydantic::Error{};
+    problem_->message = "the tools bound and the tools found differ";
+    return *this;
+  }
+  for (std::size_t position = 0; position < tools.size(); ++position) {
+    const bool blocks = !content.empty() && content[position];
+    if (blocks) {
+      // Content is the result itself, which has no schema to publish.
+      tools[position].output_schema.reset();
+    }
+    content_.push_back(blocks);
   }
   std::vector<scrydantic::BoundTool<Context>> all = tools_.release();
   all.insert(all.end(), std::make_move_iterator(tools.begin()),
@@ -481,6 +499,8 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
     return request.error(wire::invalid_params, join({"Unknown tool: ", *name}));
   }
 
+  const std::size_t position =
+      static_cast<std::size_t>(tool - server_->tools_.tools().data());
   // A call may leave `arguments` out, which is the empty object.
   static const JsonView no_arguments = JsonView::parse("{}").value();
   std::optional<JsonView> arguments = request.param("arguments");
@@ -511,8 +531,16 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
         .server_info = {.name = server_->name_, .version = server_->version_}};
     reply.result_type = "complete";
   }
-  const auto failed = [&reply](const std::string_view text) {
-    reply.content = {{.text = std::string{text}, .type = "text"}};
+  // A text block that is not UTF-8 is the tool's own fault, and a failure.
+  bool written = true;
+  const auto say = [&reply, &written](const std::string_view text) {
+    std::optional<std::string> blocks =
+        encoded(std::vector<wire::TextContent>{{.text = std::string{text}, .type = "text"}});
+    written = blocks.has_value();
+    reply.content = Json{.text = blocks.has_value() ? std::move(*blocks) : "[]"};
+  };
+  const auto failed = [&reply, &say](const std::string_view text) {
+    say(text);
     reply.structured_content.reset();
     reply.is_error = true;
   };
@@ -530,14 +558,15 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
 
   if (threw) {
     failed(tool_failed);
+  } else if (result && server_->content_[position]) {
+    // The tool's content blocks, as they are.
+    reply.content = std::move(*result);
   } else if (result) {
-    const std::size_t position =
-        static_cast<std::size_t>(tool - server_->tools_.tools().data());
     const bool structured = tool->output_schema.has_value() &&
                             (request.modern || server_->legacy_structured_[position]);
     // A tool that returns nothing answers `{}`, which says nothing to a model.
     if (tool->output_schema.has_value() || result->text != "{}") {
-      reply.content = {{.text = content_text(*result), .type = "text"}};
+      say(content_text(*result));
     }
     if (structured) {
       reply.structured_content = std::move(*result);
@@ -552,7 +581,7 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
     failed(tool_failed);
   }
 
-  std::optional<std::string> text = encoded(reply);
+  std::optional<std::string> text = written ? encoded(reply) : std::nullopt;
   if (!text.has_value()) {
     // The tool's own message is not UTF-8.
     server_->log_line(
