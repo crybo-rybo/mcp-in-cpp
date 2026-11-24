@@ -16,6 +16,7 @@ include(Catch)
 add_executable(
   mcp_tests
   ask_tests.cpp
+  crypto_tests.cpp
   envelope_tests.cpp
   feature_tests.cpp
   http_tests.cpp
@@ -29,6 +30,8 @@ target_link_libraries(
   mcp_tests
   PRIVATE mcp::mcp mcp_project_options Catch2::Catch2WithMain
 )
+# The tests of the library's own parts, such as its SHA-256, read its sources.
+target_include_directories(mcp_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 catch_discover_tests(mcp_tests TEST_PREFIX "mcp.")
 
 
