@@ -18,6 +18,20 @@ defaults:
     shell: bash
 
 jobs:
+  # Every C++ source as .clang-format has it, with the clang-format the
+  # sources were formatted with.
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install clang-format
+        run: |
+          python3 -m venv "$RUNNER_TEMP/format"
+          "$RUNNER_TEMP/format/bin/pip" install --quiet clang-format==22.1.4
+      - name: Check the formatting
+        run: |
+          git ls-files -z '*.cpp' '*.hpp' |
+            xargs -0 "$RUNNER_TEMP/format/bin/clang-format" --dry-run --Werror
   # The official GCC image, pinned by digest: the same one Scrydantic's CI
   # builds in. GitHub's runners have no GCC 16 of their own.
   test:

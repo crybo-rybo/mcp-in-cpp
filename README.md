@@ -85,6 +85,13 @@ cmake --workflow --preset tsan     # the same under the thread sanitizer (Linux)
 
 Set `CXX` on the first configure if `g++` is not GCC 16.2.
 
+The sources follow `.clang-format`, as clang-format 22.1.4 applies it, which
+CI checks:
+
+```sh
+git ls-files '*.cpp' '*.hpp' | xargs clang-format -i
+```
+
 `tests/interop/python_client.py` drives the example server through the official
 Python client, under the modern revision and under the handshake, over stdio
 and over HTTP:
@@ -152,3 +159,7 @@ http.listen("127.0.0.1", 8000);
 
 The library does not depend on cpp-httplib; `<mcp/httplib.hpp>` is for a
 program that does.
+
+## License
+
+MIT, as [LICENSE](LICENSE) says.
