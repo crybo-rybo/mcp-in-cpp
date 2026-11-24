@@ -105,6 +105,21 @@ tests/conformance/run.sh build/dev/tests/mcp_conformance_fixture
 
 ## Use it in a project
 
+Install it, with Scrydantic beside it, and find the package:
+
+```sh
+cmake --workflow --preset release
+cmake --install build/release --prefix /opt/mcp
+```
+
+```cmake
+find_package(mcp-in-cpp 0.1 REQUIRED)  # with /opt/mcp in CMAKE_PREFIX_PATH
+target_link_libraries(my_server PRIVATE mcp::mcp)
+```
+
+A Scrydantic 0.4 that is already installed is used instead of a fetched one.
+Or fetch it with the project:
+
 ```cmake
 include(FetchContent)
 FetchContent_Declare(

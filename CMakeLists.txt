@@ -16,6 +16,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(MCP_BUILD_TESTS "Build the tests" ${PROJECT_IS_TOP_LEVEL})
 option(MCP_BUILD_EXAMPLES "Build the examples" ${PROJECT_IS_TOP_LEVEL})
 option(MCP_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ${PROJECT_IS_TOP_LEVEL})
+option(MCP_INSTALL "Generate the install rules" ON)
 set(MCP_SANITIZER "none" CACHE STRING "Sanitizer mode: none, address-undefined, or thread")
 set_property(CACHE MCP_SANITIZER PROPERTY STRINGS none address-undefined thread)
 
@@ -34,16 +35,18 @@ if(
   )
 endif()
 
-# Scrydantic is pinned to its 0.4.0 release. Set
-# FETCHCONTENT_SOURCE_DIR_SCRYDANTIC to build against a checkout instead.
+# Scrydantic 0.4: an installed one if find_package() finds it, and otherwise
+# its 0.4.0 release, fetched and built here and installed beside this library.
+# Set FETCHCONTENT_SOURCE_DIR_SCRYDANTIC to build against a checkout instead.
 include(FetchContent)
 FetchContent_Declare(
   scrydantic
   GIT_REPOSITORY https://github.com/crybo-rybo/scrydantic.git
   GIT_TAG v0.4.0
   GIT_SHALLOW TRUE
-  EXCLUDE_FROM_ALL
+  FIND_PACKAGE_ARGS 0.4
 )
+set(SCRYDANTIC_INSTALL ${MCP_INSTALL})
 FetchContent_MakeAvailable(scrydantic)
 
 # The flags of this project's own targets. No consumer sees them.
@@ -94,19 +97,74 @@ endif()
 
 # The protocol is compiled once, here. A server's own source includes the
 # headers, where only the templates that bind its tools are.
-add_library(mcp STATIC src/ask.cpp src/binding.cpp src/content.cpp src/http.cpp src/server.cpp src/sha256.cpp src/stdio.cpp)
-add_library(mcp::mcp ALIAS mcp)
-target_include_directories(
+add_library(
   mcp
-  PUBLIC "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
-  PRIVATE "${PROJECT_SOURCE_DIR}/src"
+  STATIC
+  src/ask.cpp
+  src/binding.cpp
+  src/content.cpp
+  src/http.cpp
+  src/server.cpp
+  src/sha256.cpp
+  src/stdio.cpp
 )
+add_library(mcp::mcp ALIAS mcp)
+file(GLOB MCP_PUBLIC_HEADERS CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/include/mcp/*.hpp")
+target_sources(
+  mcp
+  PUBLIC
+    FILE_SET HEADERS
+    BASE_DIRS "${PROJECT_SOURCE_DIR}/include"
+    FILES ${MCP_PUBLIC_HEADERS}
+)
+target_include_directories(mcp PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(
   mcp
   PUBLIC scrydantic::scrydantic
   PRIVATE "$<BUILD_INTERFACE:mcp_project_options>"
 )
-set_target_properties(mcp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_target_properties(
+  mcp
+  PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME mcp VERSION ${PROJECT_VERSION}
+)
+
+# A relocatable package: find_package(mcp-in-cpp) gives mcp::mcp, and finds
+# Scrydantic for it. <mcp/httplib.hpp> is installed too; it needs cpp-httplib
+# only in a program that includes it.
+if(MCP_INSTALL)
+  include(GNUInstallDirs)
+  include(CMakePackageConfigHelpers)
+  set(MCP_PACKAGE_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/mcp-in-cpp")
+  install(
+    TARGETS mcp
+    EXPORT mcpTargets
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    FILE_SET HEADERS DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  )
+  install(
+    EXPORT mcpTargets
+    FILE mcp-in-cppTargets.cmake
+    NAMESPACE mcp::
+    DESTINATION "${MCP_PACKAGE_DIR}"
+  )
+  configure_package_config_file(
+    cmake/mcp-in-cppConfig.cmake.in
+    "${PROJECT_BINARY_DIR}/mcp-in-cppConfig.cmake"
+    INSTALL_DESTINATION "${MCP_PACKAGE_DIR}"
+  )
+  # Before 1.0, a minor release may break the API.
+  write_basic_package_version_file(
+    "${PROJECT_BINARY_DIR}/mcp-in-cppConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY SameMinorVersion
+  )
+  install(
+    FILES
+      "${PROJECT_BINARY_DIR}/mcp-in-cppConfig.cmake"
+      "${PROJECT_BINARY_DIR}/mcp-in-cppConfigVersion.cmake"
+    DESTINATION "${MCP_PACKAGE_DIR}"
+  )
+endif()
 
 # cpp-httplib serves the example and the conformance fixture over HTTP. The
 # library does not use it.
