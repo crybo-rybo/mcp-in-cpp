@@ -49,10 +49,10 @@ change.
 | Progress | A tool takes an `mcp::Progress` parameter in any position. It is not in the input schema, and its reports reach a client that sent a progress token. |
 | Cancellation | A tool takes a `std::stop_token` parameter in any position, or reads `mcp::Context::stop`. It stops when the client cancels the call, and a cancelled call gets no response. |
 | Concurrency | `mcp::serve_stdio` reads on one thread and runs up to eight requests at once on others (`StdioOptions::concurrency`; one runs them in order). A server's tools must then be safe to call side by side. |
-| Transport | stdio: `mcp::serve_stdio`. `mcp::Connection::handle` takes one message and returns the response, and may be called from several threads, for a transport of your own. |
+| Transport | stdio: `mcp::serve_stdio`. Streamable HTTP: `mcp::HttpEndpoint`, behind an HTTP server the program already has; `<mcp/httplib.hpp>` mounts it on cpp-httplib. `mcp::Connection::handle` takes one message and returns the response, and may be called from several threads, for a transport of your own. |
+| HTTP | 2026-07-28 statelessly, with its routing headers checked (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) and a closed stream as cancellation. The handshake revisions in sessions named by `Mcp-Session-Id`, cancelled by notification. A response is JSON, or an event stream once the call sends a notification. `Host` and `Origin` are checked against the local machine's names by default. |
 
-Not there yet: Streamable HTTP, resources, prompts, elicitation, authorization,
-and a client.
+Not there yet: resources, prompts, elicitation, authorization, and a client.
 
 ## Requirements
 
@@ -72,7 +72,8 @@ cmake --workflow --preset tsan     # the same under the thread sanitizer (Linux)
 Set `CXX` on the first configure if `g++` is not GCC 16.2.
 
 `tests/interop/python_client.py` drives the example server through the official
-Python client, under the modern revision and under the handshake:
+Python client, under the modern revision and under the handshake, over stdio
+and over HTTP:
 
 ```sh
 pip install mcp
@@ -94,3 +95,20 @@ target_link_libraries(my_server PRIVATE mcp::mcp)
 
 The `mcp::mcp` target turns on C++26 and `-freflection` for its users.
 [`examples/weather.cpp`](examples/weather.cpp) is a complete server.
+
+To serve over Streamable HTTP, route one path of your HTTP server to an
+`mcp::HttpEndpoint` through an `mcp::HttpResponse` of your own, or with
+cpp-httplib:
+
+```cpp
+#include <httplib.h>
+#include <mcp/httplib.hpp>
+
+mcp::HttpEndpoint endpoint{server};
+httplib::Server http;
+mcp::mount(http, "/mcp", endpoint);
+http.listen("127.0.0.1", 8000);
+```
+
+The library does not depend on cpp-httplib; `<mcp/httplib.hpp>` is for a
+program that does.

@@ -2,15 +2,18 @@
 
     python tests/interop/python_client.py build/dev/examples/mcp_weather_example
 
-It connects three times: as the client connects by default (a `server/discover`
-probe, then the 2026-07-28 revision), with the `initialize` handshake of the
-earlier revisions, and pinned to 2026-07-28 without a probe. Each time it lists
-the tools and calls them, and checks what the client made of every answer. It
-needs `pip install mcp` (2.3 or newer), and exits non-zero on the first
-difference.
+It connects three times over stdio, and the same three times over Streamable
+HTTP, with the server started as `--http PORT`: as the client connects by
+default (a `server/discover` probe, then the 2026-07-28 revision), with the
+`initialize` handshake of the earlier revisions, and pinned to 2026-07-28
+without a probe. Each time it lists the tools and calls them, and checks what
+the client made of every answer. It needs `pip install mcp` (2.3 or newer), and
+exits non-zero on the first difference.
 """
 
 import asyncio
+import socket
+import subprocess
 import sys
 import time
 
@@ -27,9 +30,14 @@ def check(label: str, actual: object, expected: object) -> None:
 
 
 async def exercise(
-    command: str, mode: str, version: str, modern: bool, pinned: bool = False
+    server: StdioServerParameters | str,
+    mode: str,
+    version: str,
+    modern: bool,
+    pinned: bool = False,
 ) -> None:
-    tag = f"[{mode}]"
+    transport = "stdio" if isinstance(server, StdioServerParameters) else "http"
+    tag = f"[{transport} {mode}]"
     progress: list[tuple[float, float | None, str | None]] = []
 
     async def on_progress(
@@ -37,7 +45,7 @@ async def exercise(
     ) -> None:
         progress.append((value, total, message))
 
-    async with Client(StdioServerParameters(command=command), mode=mode) as client:
+    async with Client(server, mode=mode) as client:
         check(f"{tag} protocol version", client.protocol_version, version)
         if not pinned:
             # A pinned client sends no discovery request, so it knows the
@@ -161,11 +169,43 @@ async def exercise(
             raise SystemExit(f"FAIL {tag} an unknown tool did not raise")
 
 
+async def exercise_all(server: StdioServerParameters | str) -> None:
+    await exercise(server, "auto", "2026-07-28", modern=True)
+    await exercise(server, "legacy", "2025-11-25", modern=False)
+    await exercise(server, "2026-07-28", "2026-07-28", modern=True, pinned=True)
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def wait_for_port(port: int, process: subprocess.Popen[bytes]) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise SystemExit(f"FAIL the HTTP server exited with {process.returncode}")
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            return
+        except OSError:
+            time.sleep(0.05)
+    raise SystemExit("FAIL the HTTP server did not start listening")
+
+
 async def main() -> None:
     command = sys.argv[1]
-    await exercise(command, "auto", "2026-07-28", modern=True)
-    await exercise(command, "legacy", "2025-11-25", modern=False)
-    await exercise(command, "2026-07-28", "2026-07-28", modern=True, pinned=True)
+    await exercise_all(StdioServerParameters(command=command))
+
+    port = free_port()
+    process = subprocess.Popen([command, "--http", str(port)])
+    try:
+        wait_for_port(port, process)
+        await exercise_all(f"http://127.0.0.1:{port}/mcp")
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
     print("all interop checks passed")
 
 

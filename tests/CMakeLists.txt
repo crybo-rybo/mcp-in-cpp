@@ -16,6 +16,7 @@ include(Catch)
 add_executable(
   mcp_tests
   envelope_tests.cpp
+  http_tests.cpp
   legacy_tests.cpp
   modern_tests.cpp
   stdio_tests.cpp

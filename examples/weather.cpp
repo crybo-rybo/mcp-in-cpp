@@ -8,15 +8,24 @@
 //     "io.modelcontextprotocol/protocolVersion":"2026-07-28",
 //     "io.modelcontextprotocol/clientCapabilities":{}}}}' | tr -d '\n' |
 //     ./mcp_weather_example
+//
+// Or serve it over Streamable HTTP at http://127.0.0.1:8000/mcp:
+//
+//   ./mcp_weather_example --http 8000
 
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <expected>
+#include <charconv>
+#include <httplib.h>
+#include <iostream>
+#include <mcp/httplib.hpp>
 #include <mcp/mcp.hpp>
 #include <mutex>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace weather {
@@ -63,9 +72,27 @@ struct Forecast {
 
 } // namespace weather
 
-int main() {
+int main(const int argc, const char* const argv[]) {
   mcp::Server server{"weather", "1.0.0"};
   server.instructions("Forecasts for a few cities. Call cities first.");
   server.add<^^weather>();
-  return mcp::serve_stdio(server);
+  if (argc < 3 || std::string_view{argv[1]} != "--http") {
+    return mcp::serve_stdio(server);
+  }
+
+  const std::string_view text{argv[2]};
+  int port = 0;
+  if (std::from_chars(text.data(), text.data() + text.size(), port).ec != std::errc{}) {
+    std::cerr << "usage: mcp_weather_example [--http PORT]\n";
+    return 2;
+  }
+  if (const mcp::Status status = server.status(); !status) {
+    std::cerr << status.error().message << '\n';
+    return 1;
+  }
+  mcp::HttpEndpoint endpoint{server};
+  httplib::Server http;
+  mcp::mount(http, "/mcp", endpoint);
+  // Only this machine can reach the server, as the protocol advises.
+  return http.listen("127.0.0.1", port) ? 0 : 1;
 }
