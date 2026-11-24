@@ -34,14 +34,13 @@ if(
   )
 endif()
 
-# Scrydantic is pinned to a commit of its main branch: the features this
-# library is built on are newer than its last release, 0.3.2. Set
+# Scrydantic is pinned to its 0.4.0 release, by the tag's commit. Set
 # FETCHCONTENT_SOURCE_DIR_SCRYDANTIC to build against a checkout instead.
 include(FetchContent)
 FetchContent_Declare(
   scrydantic
   GIT_REPOSITORY https://github.com/crybo-rybo/scrydantic.git
-  GIT_TAG 0829fcf8ecf9179c7dbb51f274a81f76ab5c94ec
+  GIT_TAG f2cb6799b379a3f4ccddf84977969f4310f75987 # v0.4.0
   EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(scrydantic)

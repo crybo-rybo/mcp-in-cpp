@@ -58,7 +58,7 @@ Streamable HTTP, resources, prompts, elicitation, authorization, and a client.
 - GCC 16.2 or newer. It is the only compiler that implements C++26 reflection.
 - CMake 3.30 or newer.
 
-Scrydantic is fetched at configure time, pinned to a commit of its main branch.
+Scrydantic is fetched at configure time, pinned to its 0.4.0 release.
 
 ## Build and test
 
