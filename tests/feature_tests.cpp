@@ -260,6 +260,32 @@ TEST_CASE("a URI template matches whole segments") {
   CHECK(mcp::match_uri_template("a://{x}-{y}", "a://1-2") == R"({"x":"1","y":"2"})");
   CHECK(mcp::match_uri_template("a://{+p}", "a://x/y?z") == R"({"p":"x/y?z"})");
   CHECK(mcp::match_uri_template("a://b", "a://b/c") == std::nullopt);
+  // A variable takes the longest text that lets the rest match.
+  CHECK(mcp::match_uri_template("file:///{name}.md", "file:///a.md.md") ==
+        R"({"name":"a.md"})");
+  // Text that decodes to bytes that are not UTF-8 matches nothing.
+  CHECK(mcp::match_uri_template("file:///{name}.md", "file:///%FF.md") == std::nullopt);
+  CHECK(mcp::match_uri_template("a://{x}", "a://%C3%A9") == R"({"x":"é"})");
+}
+
+TEST_CASE("a session subscribes only to resources the server has") {
+  std::vector<std::string> log;
+  const mcp::Server server = library_server(log);
+  mcp::Connection connection{server};
+  REQUIRE(connection.handle(support::initialize("2025-11-25")).has_value());
+  CHECK(connection.handle(legacy("1", "resources/subscribe", R"({"uri":"bogus://0"})")) ==
+        R"({"error":{"code":-32002,"data":{"uri":"bogus://0"},"message":"Resource not found"},)"
+        R"("id":1,"jsonrpc":"2.0"})");
+  // A template's match is a resource too.
+  CHECK(connection.handle(legacy("2", "resources/subscribe", R"({"uri":"books://1"})")) ==
+        result("2", "{}"));
+}
+
+TEST_CASE("a request state key shorter than 32 bytes cannot serve") {
+  std::vector<std::string> log;
+  mcp::Server server = library_server(log);
+  server.request_state_key("short");
+  CHECK(server.status().error().message == "a request state key must be at least 32 bytes");
 }
 
 TEST_CASE("a session subscribes to a resource and is told when it changes") {

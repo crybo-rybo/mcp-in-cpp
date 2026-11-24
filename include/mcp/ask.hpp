@@ -27,9 +27,15 @@
 /// every question asked; the client asks the person, and sends the request
 /// again with the answers, which the function then finds. The function runs
 /// once per round, so what it does before it asks it does again: it asks
-/// first, and acts once it has every answer. The answers of earlier rounds
-/// travel in a `requestState` that the server signs, so a client cannot
-/// change them.
+/// first, and acts once it has every answer. To ask several questions in one
+/// round, it asks them all before it looks at any answer. The answers of
+/// earlier rounds travel in a `requestState` that the server signs and binds to
+/// the request, so a client cannot change an answer it gave; it can only answer
+/// a question the call has still to ask, as any client may answer what it is
+/// asked.
+///
+/// An Elicitation, a Sampling, or a Roots is valid only while the call that it
+/// was given to runs; a function must not keep one.
 ///
 /// Each question has a key, which names its answer across rounds. It is
 /// `input-1`, `input-2`, and so on, in the order the call asks, unless the

@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
 #include <cstddef>
 #include <cstdint>
 #include <mcp/http.hpp>
@@ -350,6 +351,16 @@ struct Session {
       }
     }
   }
+
+  // Ends the session: its calls, the questions they wait on, and its stream.
+  void close() {
+    closed.request_stop();
+    connection.client_gone();
+    cancel_all();
+  }
+
+  // Stops when the session ends.
+  std::stop_source closed;
 };
 
 } // namespace
@@ -386,11 +397,13 @@ struct HttpEndpoint::State {
 
   static void cancel(const std::shared_ptr<Session>& session) {
     if (session != nullptr) {
-      session->cancel_all();
+      session->close();
     }
   }
 
   [[nodiscard]] std::shared_ptr<Session> find(const std::string& id) {
+    // A session that ends here is destroyed once the lock is released.
+    std::shared_ptr<Session> ended;
     const std::scoped_lock lock{mutex};
     const auto found = sessions.find(id);
     if (found == sessions.end()) {
@@ -398,7 +411,8 @@ struct HttpEndpoint::State {
     }
     const Clock::time_point now = Clock::now();
     if (now - found->second.used > options.session_timeout) {
-      cancel(found->second.session);
+      ended = std::move(found->second.session);
+      cancel(ended);
       sessions.erase(found);
       return nullptr;
     }
@@ -407,12 +421,15 @@ struct HttpEndpoint::State {
   }
 
   std::string keep(std::shared_ptr<Session> session) {
+    // The sessions that end here are destroyed once the lock is released.
+    std::vector<std::shared_ptr<Session>> ended;
     const std::scoped_lock lock{mutex};
     const Clock::time_point now = Clock::now();
     std::erase_if(sessions, [&](const auto& entry) {
       const bool expired = now - entry.second.used > options.session_timeout;
       if (expired) {
         cancel(entry.second.session);
+        ended.push_back(entry.second.session);
       }
       return expired;
     });
@@ -424,6 +441,7 @@ struct HttpEndpoint::State {
         break;
       }
       cancel(oldest->second.session);
+      ended.push_back(std::move(oldest->second.session));
       sessions.erase(oldest);
     }
     std::string id = new_session_id();
@@ -607,9 +625,17 @@ void HttpEndpoint::State::serve_legacy(const HttpRequest& request, HttpResponse&
     const std::scoped_lock lock{session->mutex};
     session->running[id] = stop;
   }
+  // Nor can the client answer a question of the server's once the stream that
+  // carries it is lost, so that stops the call. A client that takes no stream
+  // is asked nothing.
   std::stop_source gone;
-  Reply reply{out, accepts(request.header("Accept"), "text/event-stream"), gone};
-  const Notify notify = [&reply](const std::string_view text) { reply.event(text); };
+  const std::stop_callback lost{gone.get_token(), [&stop] { stop->request_stop(); }};
+  const bool streams = accepts(request.header("Accept"), "text/event-stream");
+  Reply reply{out, streams, gone};
+  Notify notify;
+  if (streams) {
+    notify = [&reply](const std::string_view text) { reply.event(text); };
+  }
   const std::optional<std::string> response =
       session->connection.handle(request.body, notify, stop->get_token());
   {
@@ -643,22 +669,53 @@ void HttpEndpoint::State::stream_session(const HttpRequest& request, HttpRespons
     send_plain(out, 406, "Accept must include text/event-stream");
     return;
   }
+  // The stream ends when the client goes, or the session does.
   std::stop_source gone;
   const std::stop_callback forward{stop, [&gone] { gone.request_stop(); }};
+  const std::stop_callback ended{session->closed.get_token(),
+                                 [&gone] { gone.request_stop(); }};
   Reply reply{out, true, gone};
+
+  // Updates are queued here by whoever announces them, and written by this
+  // thread, which the host's response belongs to.
+  constexpr std::size_t most_queued = 1024;
+  std::mutex queue_mutex;
+  std::condition_variable_any wake;
+  std::deque<std::string> queued;
   std::uint64_t mine = 0;
   {
     const std::scoped_lock lock{session->mutex};
     mine = ++session->streams;
-    session->connection.push_to([&reply](const std::string_view text) { reply.event(text); });
+    session->connection.push_to([&](const std::string_view text) {
+      {
+        const std::scoped_lock queue_lock{queue_mutex};
+        if (queued.size() < most_queued) {
+          queued.emplace_back(text);
+        }
+      }
+      wake.notify_all();
+    });
   }
   const std::stop_token closed = gone.get_token();
-  std::mutex quiet;
-  std::condition_variable_any idle;
-  std::unique_lock lock{quiet};
   // The first comment opens the stream.
-  while (reply.comment() && !closed.stop_requested()) {
-    idle.wait_for(lock, closed, options.keepalive, [] { return false; });
+  bool open = reply.comment();
+  while (open && !closed.stop_requested()) {
+    std::deque<std::string> batch;
+    {
+      std::unique_lock lock{queue_mutex};
+      wake.wait_for(lock, closed, options.keepalive, [&] { return !queued.empty(); });
+      batch.swap(queued);
+    }
+    if (closed.stop_requested()) {
+      break;
+    }
+    if (batch.empty()) {
+      open = reply.comment();
+    }
+    for (const std::string& message : batch) {
+      reply.event(message);
+    }
+    open = open && !gone.stop_requested();
   }
   const std::scoped_lock last{session->mutex};
   if (session->streams == mine) {
@@ -701,10 +758,15 @@ void HttpEndpoint::State::serve_modern(const HttpRequest& request, HttpResponse&
   const bool enveloped = body_version.has_value() && body_version->string().has_value() &&
                          is_object(meta->find(client_capabilities_key));
   if (!enveloped) {
-    const std::optional<std::string> response = modern.handle(request.body);
-    send_json(out, 400,
-              response.value_or(error_message(id, invalid_params,
-                                              "Invalid params: _meta is required")));
+    std::optional<std::string> response = modern.handle(request.body);
+    if (!response.has_value() || !error_code(*response).has_value()) {
+      // Such as ping, which an earlier revision has: here it has no envelope.
+      response = error_message(
+          id, invalid_params,
+          join({"Invalid params: _meta[\"", protocol_version_key, "\"] and _meta[\"",
+                client_capabilities_key, "\"] are required"}));
+    }
+    send_json(out, 400, *response);
     return;
   }
 

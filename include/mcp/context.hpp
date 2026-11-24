@@ -54,7 +54,8 @@ using Notify = std::function<void(std::string_view message)>;
 /// never sent to the client.
 using Log = std::function<void(std::string_view line)>;
 
-/// Reports how far a tool call has come.
+/// Reports how far a tool call has come. It is valid only while that call
+/// runs, and may report from several threads of it.
 ///
 /// A tool takes one as a parameter in any position, and the server fills it in.
 /// It is not an argument, so it is not in the tool's input schema. Reports
@@ -112,6 +113,7 @@ enum class LogLevel : std::uint8_t {
 /// `logging/setLevel`, and until it does every message is sent.
 ///
 /// A server whose functions take a Logger declares the `logging` capability.
+/// A Logger is valid only while the call it was given to runs.
 class Logger {
 public:
   /// A Logger that sends to no one.

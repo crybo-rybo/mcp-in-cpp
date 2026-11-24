@@ -1,4 +1,5 @@
 #include <cstddef>
+#include <cstdint>
 #include <mcp/binding.hpp>
 #include <mcp/content.hpp>
 #include <optional>
@@ -51,52 +52,98 @@ namespace {
 
 } // namespace
 
-std::optional<std::string> match_uri_template(const std::string_view uri_template,
-                                              const std::string_view uri) {
-  std::vector<std::pair<std::string_view, std::string>> variables;
-  std::size_t pattern = 0;
+namespace {
+
+// Whether text is UTF-8, as a JSON string must be.
+[[nodiscard]] bool is_utf8(const std::string_view text) noexcept {
   std::size_t at = 0;
-  while (pattern < uri_template.size()) {
-    const std::size_t open = uri_template.find('{', pattern);
-    const std::string_view literal = uri_template.substr(pattern, open - pattern);
-    if (uri.substr(at, literal.size()) != literal) {
-      return std::nullopt;
+  while (at < text.size()) {
+    const auto lead = static_cast<unsigned char>(text[at]);
+    std::size_t length = 0;
+    std::uint32_t point = 0;
+    if (lead < 0x80) {
+      ++at;
+      continue;
     }
-    at += literal.size();
-    if (open == std::string_view::npos) {
-      break;
+    if ((lead & 0xE0U) == 0xC0) {
+      length = 2;
+      point = lead & 0x1FU;
+    } else if ((lead & 0xF0U) == 0xE0) {
+      length = 3;
+      point = lead & 0x0FU;
+    } else if ((lead & 0xF8U) == 0xF0) {
+      length = 4;
+      point = lead & 0x07U;
+    } else {
+      return false;
     }
-    const std::size_t close = uri_template.find('}', open);
-    std::string_view name = uri_template.substr(open + 1, close - open - 1);
-    const bool reserved = name.starts_with('+');
-    if (reserved) {
-      name.remove_prefix(1);
+    if (at + length > text.size()) {
+      return false;
     }
-    pattern = close + 1;
-    // A variable runs to the literal text that follows it, or to the end. A
-    // simple one stays within a path segment.
-    const std::size_t next_open = uri_template.find('{', pattern);
-    const std::string_view next = uri_template.substr(pattern, next_open - pattern);
-    std::size_t end = next.empty() ? uri.size() : uri.find(next, at);
-    if (end == std::string_view::npos) {
-      return std::nullopt;
+    for (std::size_t next = 1; next < length; ++next) {
+      const auto byte = static_cast<unsigned char>(text[at + next]);
+      if ((byte & 0xC0U) != 0x80) {
+        return false;
+      }
+      point = (point << 6U) | (byte & 0x3FU);
     }
-    std::string_view value = uri.substr(at, end - at);
+    constexpr std::uint32_t least[] = {0, 0, 0x80, 0x800, 0x10000};
+    if (point < least[length] || point > 0x10FFFF || (point >= 0xD800 && point <= 0xDFFF)) {
+      return false;
+    }
+    at += length;
+  }
+  return true;
+}
+
+using Variables = std::vector<std::pair<std::string_view, std::string>>;
+
+// Matches the rest of a template, from `pattern`, against the rest of a URI,
+// from `at`. A variable takes the longest text that lets the rest match.
+[[nodiscard]] bool match_from(const std::string_view uri_template, const std::size_t pattern,
+                              const std::string_view uri, const std::size_t at,
+                              Variables& variables) {
+  if (pattern == uri_template.size()) {
+    return at == uri.size();
+  }
+  if (uri_template[pattern] != '{') {
+    return at < uri.size() && uri[at] == uri_template[pattern] &&
+           match_from(uri_template, pattern + 1, uri, at + 1, variables);
+  }
+  const std::size_t close = uri_template.find('}', pattern);
+  std::string_view name = uri_template.substr(pattern + 1, close - pattern - 1);
+  const bool reserved = name.starts_with('+');
+  if (reserved) {
+    name.remove_prefix(1);
+  }
+  for (std::size_t end = uri.size(); end > at; --end) {
+    const std::string_view value = uri.substr(at, end - at);
+    // A simple variable stays within a path segment.
     if (!reserved && value.find_first_of("/?#") != std::string_view::npos) {
-      return std::nullopt;
-    }
-    if (value.empty()) {
-      return std::nullopt;
+      continue;
     }
     std::optional<std::string> decoded =
         reserved ? std::optional<std::string>{std::string{value}} : percent_decoded(value);
-    if (!decoded.has_value()) {
-      return std::nullopt;
+    if (!decoded.has_value() || !is_utf8(*decoded)) {
+      continue;
     }
     variables.emplace_back(name, std::move(*decoded));
-    at = end;
+    if (match_from(uri_template, close + 1, uri, end, variables)) {
+      return true;
+    }
+    variables.pop_back();
   }
-  if (at != uri.size()) {
+  return false;
+}
+
+} // namespace
+
+std::optional<std::string> match_uri_template(const std::string_view uri_template,
+                                              const std::string_view uri) {
+  // Longer URIs are not resources a client can be expected to read.
+  constexpr std::size_t longest = 8192;
+  Variables variables;
+  if (uri.size() > longest || !match_from(uri_template, 0, uri, 0, variables)) {
     return std::nullopt;
   }
   std::string object{"{"};

@@ -442,3 +442,70 @@ TEST_CASE("a session's GET stream carries the updates of what it subscribed to")
   endpoint.handle({.method = "GET", .headers = legacy_headers(), .body = {}}, plain);
   CHECK(plain.status == 405);
 }
+
+TEST_CASE("ending a session ends its GET stream") {
+  mcp::Server server{"sample", "0.0.1"};
+  server.add<^^watched>();
+  mcp::HttpEndpoint endpoint{server, {.keepalive = std::chrono::seconds{30}}};
+  const std::string session =
+      post(endpoint, legacy_headers(), support::initialize("2025-11-25"))
+          .header("Mcp-Session-Id")
+          .value_or("");
+  Recorded stream;
+  std::jthread streaming{[&] {
+    endpoint.handle({.method = "GET", .headers = legacy_headers(session), .body = {}}, stream);
+  }};
+  while (!stream.started()) {
+    std::this_thread::yield();
+  }
+  Recorded ended;
+  endpoint.handle({.method = "DELETE", .headers = legacy_headers(session), .body = {}}, ended);
+  CHECK(ended.status == 204);
+  // The stream returns without waiting for its next keepalive.
+  streaming.join();
+  CHECK(stream.body == ": keepalive\r\n\r\n");
+}
+
+namespace asks_http {
+
+struct Name {
+  std::string name;
+};
+
+[[= mcp::tool{"Ask a name"}]] inline mcp::Result<std::string> who(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("Who?");
+  if (!name) {
+    return std::unexpected(name.error());
+  }
+  return name->content->name;
+}
+
+} // namespace asks_http
+
+TEST_CASE("a session's client that takes no stream is not asked, and does not wait") {
+  mcp::Server server{"sample", "0.0.1"};
+  server.add<^^asks_http>();
+  mcp::HttpEndpoint endpoint{server};
+  const std::string session =
+      post(endpoint, legacy_headers(),
+           support::legacy("0", "initialize",
+                           R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
+                           R"("clientInfo":{"name":"t","version":"1"}})"))
+          .header("Mcp-Session-Id")
+          .value_or("");
+  std::vector<mcp::HttpHeader> headers = legacy_headers(session);
+  headers[2].value = "application/json";
+  const Recorded call = post(endpoint, headers, support::legacy("1", "tools/call", R"({"name":"who"})"));
+  CHECK(call.body == support::result("1", R"({"content":[{"text":"the client cannot be reached )"
+                                          R"(from this call","type":"text"}],"isError":true})"));
+}
+
+TEST_CASE("a request of 2026-07-28 without its envelope is an error, whatever its method") {
+  std::vector<std::string> log;
+  const mcp::Server server = support::sample_server(log);
+  mcp::HttpEndpoint endpoint{server};
+  const Recorded response = post(endpoint, modern_headers("ping"),
+                                 R"({"jsonrpc":"2.0","id":5,"method":"ping"})");
+  CHECK(response.status == 400);
+  CHECK(response.body.starts_with(R"({"error":{"code":-32602)"));
+}

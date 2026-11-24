@@ -21,6 +21,7 @@
 #include <meta>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <span>
@@ -135,7 +136,8 @@ public:
   /// 2026-07-28, which carries the answers of earlier rounds. The default is a
   /// random key of the process's own, so a state comes back only to the process
   /// that signed it; servers behind one address that share their clients set
-  /// one shared secret of 32 random bytes or more.
+  /// one shared secret of 32 random bytes or more. A shorter key makes the
+  /// server's status() fail.
   Server& request_state_key(std::string key);
 
   /// Sets where failures on the server's side are written. The default writes
@@ -292,6 +294,11 @@ public:
   Connection(const Connection&) = delete;
   Connection& operator=(const Connection&) = delete;
 
+  /// Says that the client can no longer answer: its input ended, or its session
+  /// did. A call that waits for the client's answer to a question gives up at
+  /// once, with an error the function returns, and no call asks again.
+  void client_gone();
+
   /// Sets where the messages that belong to no request go: the updates of the
   /// resources the client subscribed to. A transport with a stream for them
   /// sets it, and an empty function clears it; until then they are dropped.
@@ -389,9 +396,10 @@ private:
   mutable std::atomic<std::int64_t> next_request_id_{0};
   // Where messages of no request go, and the resources the client subscribed
   // to.
+  std::stop_source gone_;
   mutable std::mutex push_mutex_;
   Notify push_;
-  std::vector<std::string> subscriptions_;
+  std::unordered_set<std::string> subscriptions_;
 };
 
 } // namespace mcp

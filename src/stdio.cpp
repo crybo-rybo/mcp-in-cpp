@@ -211,6 +211,9 @@ int serve_stdio(const Server& server, std::istream& in, std::ostream& out,
       line.clear();
     }
   }
+  // A client whose input ended cannot answer: a call that waits for it gives
+  // up, and the calls already read are answered.
+  connection.client_gone();
   dispatcher.finish();
   connection.push_to({});
   return 0;

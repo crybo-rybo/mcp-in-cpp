@@ -40,7 +40,10 @@ public:
   }
 
   bool write(const std::string_view data) override {
-    const std::scoped_lock lock{mutex_};
+    // A client that reads slowly slows the writer, rather than letting what
+    // waits for it grow.
+    std::unique_lock lock{mutex_};
+    changed_.wait(lock, [this] { return gone_ || chunks_.size() < most_queued; });
     if (gone_) {
       return false;
     }
@@ -94,12 +97,14 @@ public:
     while (!chunks_.empty()) {
       std::string chunk = std::move(chunks_.front());
       chunks_.pop_front();
+      changed_.notify_all();
       lock.unlock();
       const bool sent = sink.write(chunk.data(), chunk.size());
       lock.lock();
       if (!sent) {
         gone_ = true;
         stop_.request_stop();
+        changed_.notify_all();
         return false;
       }
     }
@@ -115,6 +120,7 @@ public:
     const std::scoped_lock lock{mutex_};
     gone_ = true;
     stop_.request_stop();
+    changed_.notify_all();
   }
 
   [[nodiscard]] const std::string& content_type() const { return content_type_; }
@@ -123,6 +129,8 @@ public:
   std::jthread worker;
 
 private:
+  static constexpr std::size_t most_queued = 256;
+
   // Waits for `ready`, and meanwhile looks every so often for a client that
   // has closed the connection, which stops the endpoint's work.
   template <typename Ready>
@@ -132,6 +140,7 @@ private:
       if (!gone_ && closed && closed()) {
         gone_ = true;
         stop_.request_stop();
+        changed_.notify_all();
       }
     }
   }

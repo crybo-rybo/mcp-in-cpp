@@ -303,3 +303,102 @@ TEST_CASE("serve_stdio does not serve a server that cannot be served") {
   CHECK(out.str().empty());
   CHECK(log == std::vector<std::string>{R"(two tools are named "add")"});
 }
+
+namespace asks_on_stdio {
+
+struct Name {
+  std::string name;
+};
+
+[[= mcp::tool{"Ask a name"}]] inline mcp::Result<std::string> who(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("Who?");
+  if (!name) {
+    return std::unexpected(name.error());
+  }
+  return name->content->name;
+}
+
+} // namespace asks_on_stdio
+
+TEST_CASE("serve_stdio returns when the input ends while a call waits for the client") {
+  mcp::Server server{"sample", "0.0.1"};
+  server.add<^^asks_on_stdio>();
+  std::istringstream in{
+      support::legacy("0", "initialize",
+                      R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
+                      R"("clientInfo":{"name":"t","version":"1"}})") +
+      "\n" + support::legacy("1", "tools/call", R"({"name":"who"})") + "\n"};
+  std::ostringstream out;
+  CHECK(mcp::serve_stdio(server, in, out, {.concurrency = 1}) == 0);
+  // The client had gone before the call ran, so it was not asked.
+  CHECK(out.str().find(R"("isError":true)") != std::string::npos);
+}
+
+namespace {
+
+// An output stream that a test can wait on for some text.
+class Watched : public std::streambuf {
+public:
+  bool wait_for(const std::string_view text) {
+    std::unique_lock lock{mutex_};
+    return changed_.wait_for(lock, std::chrono::seconds{10},
+                             [&] { return written_.find(text) != std::string::npos; });
+  }
+
+  std::string text() {
+    const std::scoped_lock lock{mutex_};
+    return written_;
+  }
+
+protected:
+  std::streamsize xsputn(const char* data, const std::streamsize size) override {
+    {
+      const std::scoped_lock lock{mutex_};
+      written_.append(data, static_cast<std::size_t>(size));
+    }
+    changed_.notify_all();
+    return size;
+  }
+
+  int_type overflow(const int_type c) override {
+    if (!traits_type::eq_int_type(c, traits_type::eof())) {
+      const char letter = traits_type::to_char_type(c);
+      xsputn(&letter, 1);
+    }
+    return c;
+  }
+
+private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  std::string written_;
+};
+
+} // namespace
+
+TEST_CASE("a call that waits for the client gives up when the input ends") {
+  mcp::Server server{"sample", "0.0.1"};
+  server.add<^^asks_on_stdio>();
+  Feed feed;
+  std::istream in{&feed};
+  Watched watched;
+  std::ostream out{&watched};
+  std::jthread serving{[&] { CHECK(mcp::serve_stdio(server, in, out) == 0); }};
+
+  // The input ends however the test does, so that the server returns.
+  struct Closing {
+    Feed& feed;
+    ~Closing() { feed.close(); }
+  } closing{feed};
+
+  feed.push(support::legacy("0", "initialize",
+                            R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
+                            R"("clientInfo":{"name":"t","version":"1"}})"));
+  // A client waits for the handshake to finish before it calls.
+  REQUIRE(watched.wait_for(R"("protocolVersion":"2025-11-25")"));
+  feed.push(support::legacy("1", "tools/call", R"({"name":"who"})"));
+  REQUIRE(watched.wait_for(R"("method":"elicitation/create")"));
+  feed.close();
+  serving.join();
+  CHECK(watched.text().find(R"("isError":true)") != std::string::npos);
+}

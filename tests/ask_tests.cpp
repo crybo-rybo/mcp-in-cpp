@@ -353,3 +353,22 @@ TEST_CASE("an answer that is not a response to its question is invalid params") 
                                R"({"input-1":{"action":"maybe"}})"))
             ->starts_with(R"({"error":{"code":-32602,"message":"Invalid params: the answer to a form)"));
 }
+
+TEST_CASE("an answer the state carries cannot be changed by a later round") {
+  const mcp::Server server = asking_server();
+  mcp::Connection connection{server};
+  const std::optional<std::string> first = connection.handle(call("1", "two_steps", everything));
+  std::string second_round{R"("inputResponses":{"step1":{"action":"accept","content":)"
+                           R"({"name":"Ada"}}},"requestState":)"};
+  second_round += result_member(first, "requestState");
+  const std::optional<std::string> second =
+      connection.handle(call("2", "two_steps", everything, second_round));
+
+  // The last round tries to give step1 another answer.
+  std::string third_round{R"("inputResponses":{"step1":{"action":"accept","content":)"
+                          R"({"name":"Eve"}},"step2":{"action":"accept","content":)"
+                          R"({"color":"red"}}},"requestState":)"};
+  third_round += result_member(second, "requestState");
+  CHECK(connection.handle(call("3", "two_steps", everything, third_round)) ==
+        called("3", text_content("Ada likes red", false), R"("Ada likes red")"));
+}

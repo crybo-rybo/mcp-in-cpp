@@ -187,6 +187,33 @@ struct ClientAbilities {
           .roots = capabilities->find("roots").has_value()};
 }
 
+// How many resources one session may subscribe to.
+constexpr std::size_t most_subscriptions = 1024;
+
+// The resource a URI names: one of that URI, or else the first template it
+// matches, whose variables then go to `variables`.
+[[nodiscard]] const BoundResource* find_resource(const std::span<const BoundResource> resources,
+                                                 const std::string_view uri,
+                                                 std::string* const variables = nullptr) {
+  for (const BoundResource& resource : resources) {
+    if (!resource.is_template && resource.uri == uri) {
+      return &resource;
+    }
+  }
+  for (const BoundResource& resource : resources) {
+    if (!resource.is_template) {
+      continue;
+    }
+    if (std::optional<std::string> matched = match_uri_template(resource.uri, uri)) {
+      if (variables != nullptr) {
+        *variables = std::move(*matched);
+      }
+      return &resource;
+    }
+  }
+  return nullptr;
+}
+
 [[nodiscard]] std::optional<LogLevel> log_level_named(const std::string_view name) {
   constexpr std::string_view names[] = {"debug", "info",     "notice", "warning",
                                         "error", "critical", "alert",  "emergency"};
@@ -269,14 +296,19 @@ legacy_version_named(const std::string_view version) noexcept {
 struct Progress::State {
   const Notify* notify{};
   std::string token{};
+  // Reports may come from several threads of one call.
+  std::mutex mutex;
   bool reported{};
   double last{};
 };
 
 void Progress::report(const double progress, std::optional<double> total,
                       const std::string_view message) const {
-  if (state_ == nullptr || !std::isfinite(progress) ||
-      (state_->reported && progress <= state_->last)) {
+  if (state_ == nullptr) {
+    return;
+  }
+  const std::scoped_lock lock{state_->mutex};
+  if (!std::isfinite(progress) || (state_->reported && progress <= state_->last)) {
     return;
   }
   if (total.has_value() && !std::isfinite(*total)) {
@@ -386,6 +418,8 @@ Connection::~Connection() {
   std::erase(server_->registry_->connections, this);
 }
 
+void Connection::client_gone() { gone_.request_stop(); }
+
 void Connection::push_to(Notify sink) {
   const std::scoped_lock lock{push_mutex_};
   push_ = std::move(sink);
@@ -393,7 +427,7 @@ void Connection::push_to(Notify sink) {
 
 void Connection::resource_updated(const std::string_view uri) const {
   const std::scoped_lock lock{push_mutex_};
-  if (!push_ || std::ranges::find(subscriptions_, uri) == subscriptions_.end()) {
+  if (!push_ || !subscriptions_.contains(std::string{uri})) {
     return;
   }
   push_(notification_message("notifications/resources/updated",
@@ -401,6 +435,10 @@ void Connection::resource_updated(const std::string_view uri) const {
 }
 
 Server& Server::request_state_key(std::string key) {
+  if (key.size() < 32 && !problem_.has_value()) {
+    problem_ = scrydantic::Error{};
+    problem_->message = "a request state key must be at least 32 bytes";
+  }
   state_key_ = std::move(key);
   return *this;
 }
@@ -855,12 +893,20 @@ std::string Connection::subscribe(const Request& request, const bool subscribing
   if (!uri.has_value()) {
     return request.error(wire::invalid_params, "Invalid params: uri must be a string");
   }
+  if (subscribing && find_resource(server_->resources_, *uri) == nullptr) {
+    const std::optional<std::string> data =
+        encoded(wire::ResourceNotFoundData{.uri = std::string{*uri}});
+    return request.error(wire::resource_not_found, "Resource not found",
+                         data.value_or(std::string{}));
+  }
   const std::scoped_lock lock{push_mutex_};
-  const auto found = std::ranges::find(subscriptions_, *uri);
-  if (subscribing && found == subscriptions_.end()) {
-    subscriptions_.emplace_back(*uri);
-  } else if (!subscribing && found != subscriptions_.end()) {
-    subscriptions_.erase(found);
+  if (!subscribing) {
+    subscriptions_.erase(std::string{*uri});
+  } else if (subscriptions_.size() >= most_subscriptions) {
+    return request.error(wire::invalid_params,
+                         "Invalid params: a session subscribes to at most 1024 resources");
+  } else {
+    subscriptions_.emplace(*uri);
   }
   return request.result("{}");
 }
@@ -1152,7 +1198,9 @@ std::optional<std::string> Connection::prepare_inquiry(const Request& request, C
     }
     for (std::size_t index = 0; index < responses->size(); ++index) {
       const std::string_view name = responses->key_at(index).value_or("");
-      inquiry.answers.insert_or_assign(std::string{name}, responses->find(name)->to_json().text);
+      // An answer the state carries was given in an earlier round, and
+      // stays as it was.
+      inquiry.answers.emplace(std::string{name}, responses->find(name)->to_json().text);
     }
   }
   return std::nullopt;
@@ -1203,7 +1251,7 @@ std::optional<std::string> Connection::inquiry_outcome(const Request& request, C
 Result<std::string> Connection::ask_client(const std::string_view method,
                                            const std::string_view params, const Notify& notify,
                                            const std::stop_token& stop) const {
-  if (!notify) {
+  if (!notify || gone_.stop_requested()) {
     return std::unexpected(scrydantic::tool_error("the client cannot be reached from this call"));
   }
   const std::string id =
@@ -1217,8 +1265,14 @@ Result<std::string> Connection::ask_client(const std::string_view method,
                scrydantic::escape_json_string(method), R"(,"params":)", params, "}"}));
   std::optional<std::string> response;
   {
+    // The call waits until the answer comes, the call is cancelled, or the
+    // client is gone.
+    std::stop_source either;
+    const std::stop_callback cancelled{stop, [&either] { either.request_stop(); }};
+    const std::stop_callback left{gone_.get_token(), [&either] { either.request_stop(); }};
     std::unique_lock lock{waiting->mutex};
-    waiting->done.wait(lock, stop, [&] { return waiting->response.has_value(); });
+    waiting->done.wait(lock, either.get_token(),
+                       [&] { return waiting->response.has_value(); });
     response = std::move(waiting->response);
   }
   {
@@ -1312,26 +1366,8 @@ std::string Connection::read_resource(const Request& request, const Notify& noti
                          message, data.value_or(std::string{}));
   };
 
-  const BoundResource* found = nullptr;
   std::string variables{"{}"};
-  for (const BoundResource& resource : server_->resources_) {
-    if (!resource.is_template && resource.uri == *uri) {
-      found = &resource;
-      break;
-    }
-  }
-  if (found == nullptr) {
-    for (const BoundResource& resource : server_->resources_) {
-      if (!resource.is_template) {
-        continue;
-      }
-      if (std::optional<std::string> matched = match_uri_template(resource.uri, *uri)) {
-        found = &resource;
-        variables = std::move(*matched);
-        break;
-      }
-    }
-  }
+  const BoundResource* const found = find_resource(server_->resources_, *uri, &variables);
   if (found == nullptr) {
     return not_found("Resource not found");
   }
