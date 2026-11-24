@@ -87,6 +87,24 @@ std::string about() {
          ". Read the forecast first, and its alerts.";
 }
 
+struct Confirm {
+  [[= mcp::description{"Whether to make it the home city"}]] bool confirm{};
+};
+
+// Asks the person before it acts. Under 2026-07-28 the call runs again with
+// the answer; in a handshake session it waits for it.
+[[= mcp::tool{"Make a city the home city, once the person confirms"}]] mcp::Result<std::string>
+    set_home(std::string city, mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Confirm>> answer = ask.form<Confirm>("Make " + city + " the home city?");
+  if (!answer) {
+    return std::unexpected(answer.error());
+  }
+  if (answer->action != mcp::Action::accept || !answer->content->confirm) {
+    return std::string{"the home city is unchanged"};
+  }
+  return "the home city is now " + city;
+}
+
 [[= mcp::tool{"Watch a city for storm warnings for a number of seconds"}]] std::string
     watch(std::string city, [[= mcp::range{.min = 0, .max = 60}]] std::int32_t seconds,
           std::stop_token stop) {

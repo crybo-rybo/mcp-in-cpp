@@ -19,7 +19,7 @@ import time
 
 import anyio
 
-from mcp import Client, StdioServerParameters
+from mcp import Client, StdioServerParameters, types
 from mcp.shared.exceptions import MCPError
 
 
@@ -45,7 +45,13 @@ async def exercise(
     ) -> None:
         progress.append((value, total, message))
 
-    async with Client(server, mode=mode) as client:
+    asked: list[str] = []
+
+    async def on_elicit(context: object, params: types.ElicitRequestParams) -> types.ElicitResult:
+        asked.append(params.message)
+        return types.ElicitResult(action="accept", content={"confirm": True})
+
+    async with Client(server, mode=mode, elicitation_callback=on_elicit) as client:
         check(f"{tag} protocol version", client.protocol_version, version)
         if not pinned:
             # A pinned client sends no discovery request, so it knows the
@@ -68,7 +74,7 @@ async def exercise(
         check(
             f"{tag} tool names",
             list(tools),
-            ["forecast", "cities", "download_archive", "watch"],
+            ["forecast", "cities", "download_archive", "set_home", "watch"],
         )
         check(
             f"{tag} forecast description",
@@ -145,6 +151,11 @@ async def exercise(
             progress,
             [(1.0, 3.0, "downloading"), (2.0, 3.0, "downloading"), (3.0, 3.0, "downloading")],
         )
+
+        # The tool asks the person, through the client, before it acts.
+        result = await client.call_tool("set_home", {"city": "Oslo"})
+        check(f"{tag} an elicited answer is used", result.content[0].text, "the home city is now Oslo")
+        check(f"{tag} the person was asked", asked, ["Make Oslo the home city?"])
 
         # Two calls of a second each run side by side.
         started = time.monotonic()
