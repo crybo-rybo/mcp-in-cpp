@@ -56,12 +56,13 @@ change.
 | Tool results | Text content, and structured content with the tool's output schema. A returned string is sent as the text itself. A tool that returns `mcp::Content` sends its blocks as they are: text, images, audio, embedded resources, and resource links. |
 | Tool failures | Arguments that do not decode and a tool's own refusal are tool errors with the text meant for the model. A tool that throws, or whose result breaks its own schema, is a tool error that says only `the tool failed`; the reason goes to the server's log. An unknown tool or a malformed call is a JSON-RPC error. |
 | Progress | A tool takes an `mcp::Progress` parameter in any position. It is not in the input schema, and its reports reach a client that sent a progress token. |
+| Logging | A function takes an `mcp::Logger` parameter in any position, outside the input schema, and logs at a level. Under 2026-07-28 a request asks for messages with `_meta["io.modelcontextprotocol/logLevel"]`, and gets none without it; a handshake session sets its level with `logging/setLevel`. |
 | Cancellation | A tool takes a `std::stop_token` parameter in any position, or reads `mcp::Context::stop`. It stops when the client cancels the call, and a cancelled call gets no response. |
 | Concurrency | `mcp::serve_stdio` reads on one thread and runs up to eight requests at once on others (`StdioOptions::concurrency`; one runs them in order). A server's tools must then be safe to call side by side. |
 | Transport | stdio: `mcp::serve_stdio`. Streamable HTTP: `mcp::HttpEndpoint`, behind an HTTP server the program already has; `<mcp/httplib.hpp>` mounts it on cpp-httplib. `mcp::Connection::handle` takes one message and returns the response, and may be called from several threads, for a transport of your own. |
 | HTTP | 2026-07-28 statelessly, with its routing headers checked (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) and a closed stream as cancellation. The handshake revisions in sessions named by `Mcp-Session-Id`, cancelled by notification. A response is JSON, or an event stream once the call sends a notification. `Host` and `Origin` are checked against the local machine's names by default. |
 
-Not there yet: elicitation, logging, sampling, authorization, and a client.
+Not there yet: elicitation, sampling, roots, resource subscriptions, authorization, and a client.
 
 ## Requirements
 

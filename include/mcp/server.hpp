@@ -64,11 +64,33 @@ consteval bool has_tools(const std::meta::info entity) {
   });
 }
 
+// Whether any function that add<Entity>() binds takes an mcp::Logger.
+consteval bool takes_logger(const std::meta::info entity) {
+  std::vector<std::meta::info> functions;
+  if (std::meta::is_namespace(entity) ||
+      (std::meta::is_type(entity) && std::meta::is_class_type(entity))) {
+    for (const std::meta::info annotation : {^^scrydantic::tool, ^^resource, ^^prompt}) {
+      for (const std::meta::info function :
+           scrydantic::annotated_functions_of(entity, annotation)) {
+        functions.push_back(function);
+      }
+    }
+  } else {
+    functions.push_back(entity);
+  }
+  return std::ranges::any_of(functions, [](const std::meta::info function) {
+    return std::ranges::any_of(std::meta::parameters_of(function), [](const std::meta::info p) {
+      return std::meta::dealias(std::meta::remove_cvref(std::meta::type_of(p))) == ^^Logger;
+    });
+  });
+}
+
 // For each tool that binding `entity` binds, in order: whether it returns
 // mcp::Content. `entity` is a namespace, a toolbox class, or one function.
 consteval std::vector<bool> content_results(const std::meta::info entity) {
   std::vector<bool> marks;
-  if (std::meta::is_namespace(entity) || std::meta::is_class_type(entity)) {
+  if (std::meta::is_namespace(entity) ||
+      (std::meta::is_type(entity) && std::meta::is_class_type(entity))) {
     for (const std::meta::info function :
          scrydantic::annotated_functions_of(entity, ^^scrydantic::tool)) {
       marks.push_back(returns_content(function));
@@ -117,6 +139,7 @@ public:
             typename Resources = typename[:detail::entries_of(Entity, ^^resource):],
             typename Prompts = typename[:detail::entries_of(Entity, ^^prompt):]>
   Server& add() {
+    logs_ = logs_ || detail::takes_logger(Entity);
     if constexpr (detail::has_tools(Entity)) {
       static constexpr std::span<const bool> content =
           std::define_static_array(detail::content_results(Entity));
@@ -134,6 +157,7 @@ public:
   template <typename Toolbox, typename Tools = typename[:scrydantic::toolbox_tools_of(
                                                              ^^Toolbox, ^^Context):]>
   Server& add(std::shared_ptr<Toolbox> toolbox) {
+    logs_ = logs_ || detail::takes_logger(^^Toolbox);
     static constexpr std::span<const bool> content =
         std::define_static_array(detail::content_results(^^Toolbox));
     return add_bound(scrydantic::bind<Context, Toolbox, Tools>(std::move(toolbox)), content);
@@ -212,6 +236,8 @@ private:
   std::vector<bool> content_{};
   std::vector<BoundResource> resources_{};
   std::vector<BoundPrompt> prompts_{};
+  // Whether a function of the server takes an mcp::Logger.
+  bool logs_{};
   // The arrays of resources/list, resources/templates/list and prompts/list.
   std::string resource_list_{"[]"};
   std::string template_list_{"[]"};
@@ -275,14 +301,20 @@ private:
   [[nodiscard]] std::string get_prompt(const Request& request, const Notify& notify) const;
   [[nodiscard]] std::string complete(const Request& request) const;
   // The context of a call of this request, which reports progress to `notify`.
-  [[nodiscard]] Context context_of(const Request& request, Progress::State& progress,
+  // What a call keeps while it runs: the state of its progress and its log.
+  struct Call;
+  [[nodiscard]] Context context_of(const Request& request, Call& call,
                                    const Notify& notify) const;
+  [[nodiscard]] std::string set_log_level(const Request& request);
 
   const Server* server_;
   // The position in legacy_protocol_versions of the revision an `initialize`
   // request settled on, or none before one.
   static constexpr int no_legacy_version = -1;
   std::atomic<int> legacy_version_{no_legacy_version};
+  // The least severe LogLevel a handshake session takes, or -1 before
+  // logging/setLevel.
+  std::atomic<int> log_level_{-1};
 };
 
 } // namespace mcp

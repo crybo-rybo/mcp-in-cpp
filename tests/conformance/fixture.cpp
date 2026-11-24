@@ -66,6 +66,22 @@ mcp::Content test_multiple_content_types() {
   return "done";
 }
 
+[[= mcp::tool{"Tests tool that emits log messages during execution"}]] std::string
+    test_tool_with_logging(mcp::Logger logger) {
+  logger.info("Tool execution started");
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+  logger.info("Tool processing data");
+  std::this_thread::sleep_for(std::chrono::milliseconds{50});
+  logger.info("Tool execution completed");
+  return "Tool with logging executed successfully";
+}
+
+[[= mcp::tool{"Diagnostic logging validator tool"}]] std::string
+    test_logging_tool(mcp::Logger logger) {
+  logger.info("Diagnostic log message");
+  return "Logging complete";
+}
+
 [[= mcp::tool{"Tests error response handling"}]] mcp::Status test_error_handling() {
   return std::unexpected(
       mcp::tool_error("This tool intentionally returns an error for testing"));

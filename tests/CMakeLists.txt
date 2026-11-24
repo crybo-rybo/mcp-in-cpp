@@ -19,6 +19,7 @@ add_executable(
   feature_tests.cpp
   http_tests.cpp
   legacy_tests.cpp
+  logging_tests.cpp
   modern_tests.cpp
   stdio_tests.cpp
   tool_call_tests.cpp

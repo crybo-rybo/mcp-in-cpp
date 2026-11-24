@@ -55,9 +55,11 @@ struct ToolsCapability {};
 struct ResourcesCapability {};
 struct PromptsCapability {};
 struct CompletionsCapability {};
+struct LoggingCapability {};
 
 struct[[= skip_null]] ServerCapabilities {
   std::optional<CompletionsCapability> completions;
+  std::optional<LoggingCapability> logging;
   std::optional<PromptsCapability> prompts;
   std::optional<ResourcesCapability> resources;
   std::optional<ToolsCapability> tools;
@@ -201,6 +203,12 @@ struct[[ = rename_all{camel_case}, = skip_null ]] ProgressParams {
   double progress{};
   std::optional<double> total;
   std::optional<std::string> message;
+};
+
+// The parameters of `notifications/message`.
+struct LogParams {
+  Json data;
+  mcp::LogLevel level{};
 };
 
 struct UnsupportedVersionData {

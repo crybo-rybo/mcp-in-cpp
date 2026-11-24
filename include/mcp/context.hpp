@@ -3,6 +3,7 @@
 /// it learns that it was cancelled.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
@@ -83,6 +84,59 @@ private:
   State* state_{};
 };
 
+/// How severe a log message is, from least to most, as syslog has it.
+enum class LogLevel : std::uint8_t {
+  debug,
+  info,
+  notice,
+  warning,
+  error,
+  critical,
+  alert,
+  emergency,
+};
+
+/// Sends log messages about a call to the client.
+///
+/// A tool, a resource, or a prompt takes one as a parameter in any position,
+/// and the server fills it in, outside the input schema. Messages reach the
+/// client as `notifications/message` while the call runs, and only those as
+/// severe as the client asked for: under 2026-07-28 a request asks with
+/// `_meta["io.modelcontextprotocol/logLevel"]`, and without it nothing is
+/// sent; in a handshake session the client sets a level with
+/// `logging/setLevel`, and until it does every message is sent.
+///
+/// A server whose functions take a Logger declares the `logging` capability.
+class Logger {
+public:
+  /// A Logger that sends to no one.
+  Logger() = default;
+
+  /// Whether the client takes any message about this call.
+  [[nodiscard]] explicit operator bool() const noexcept { return state_ != nullptr; }
+
+  /// Whether the client takes messages of this level.
+  [[nodiscard]] bool wants(LogLevel level) const noexcept;
+
+  /// Sends a message of text, if the client takes its level.
+  void log(LogLevel level, std::string_view message) const;
+
+  /// Sends a message of any JSON, if the client takes its level.
+  void log(LogLevel level, const scrydantic::Json& data) const;
+
+  void debug(const std::string_view message) const { log(LogLevel::debug, message); }
+  void info(const std::string_view message) const { log(LogLevel::info, message); }
+  void notice(const std::string_view message) const { log(LogLevel::notice, message); }
+  void warning(const std::string_view message) const { log(LogLevel::warning, message); }
+  void error(const std::string_view message) const { log(LogLevel::error, message); }
+
+private:
+  friend class Connection;
+  struct State;
+  explicit Logger(State* state) noexcept : state_{state} {}
+  State* state_{};
+};
+
 /// What the server knows about the call it is serving. It is the Scrydantic
 /// call context of every tool: a tool may take it as a leading
 /// `const mcp::Context&` parameter, which is not part of its input schema.
@@ -91,6 +145,8 @@ struct Context {
   std::string_view protocol_version{};
   /// Reports progress on this call.
   Progress progress{};
+  /// Sends log messages about this call.
+  Logger logger{};
   /// Stops when the client cancels the call or goes away. A tool that runs for
   /// a while checks it, or waits on it, and returns early. What it returns
   /// then is not sent: a cancelled call gets no response.
@@ -108,6 +164,11 @@ template <> struct scrydantic::supplier<std::stop_token, mcp::Context> {
   static std::stop_token supply(const mcp::Context& context) noexcept {
     return context.stop;
   }
+};
+
+/// Lets a function take an mcp::Logger parameter in any position.
+template <> struct scrydantic::supplier<mcp::Logger, mcp::Context> {
+  static mcp::Logger supply(const mcp::Context& context) noexcept { return context.logger; }
 };
 
 /// Lets a tool take an mcp::Progress parameter in any position.

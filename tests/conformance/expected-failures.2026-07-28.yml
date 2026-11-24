@@ -2,11 +2,10 @@
 # for a feature the library does not have yet. The suite fails when one of
 # these starts to pass, so the list only shrinks.
 server:
-  # Diagnostic tools that need sampling, elicitation and logging.
+  # Diagnostic tools that need sampling and elicitation.
   - server-stateless:sep-2575-server-rejects-undeclared-capability
   - server-stateless:sep-2575-missing-capability-http-400
   - server-stateless:sep-2575-http-server-no-independent-requests-on-stream
-  - server-stateless:sep-2575-server-no-log-without-loglevel
   # Input-required results: elicitation, sampling and roots.
   - input-required-result-basic-elicitation
   - input-required-result-basic-sampling

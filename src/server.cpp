@@ -31,6 +31,18 @@ constexpr std::string_view protocol_version_key =
     "io.modelcontextprotocol/protocolVersion";
 constexpr std::string_view client_capabilities_key =
     "io.modelcontextprotocol/clientCapabilities";
+constexpr std::string_view log_level_key = "io.modelcontextprotocol/logLevel";
+
+[[nodiscard]] std::optional<LogLevel> log_level_named(const std::string_view name) {
+  constexpr std::string_view names[] = {"debug", "info",     "notice", "warning",
+                                        "error", "critical", "alert",  "emergency"};
+  for (std::size_t level = 0; level < std::size(names); ++level) {
+    if (names[level] == name) {
+      return static_cast<LogLevel>(level);
+    }
+  }
+  return std::nullopt;
+}
 
 // What a client is told when a call fails for a reason it cannot act on. The
 // reason itself goes to the server's log.
@@ -138,6 +150,39 @@ void Progress::report(const double progress, std::optional<double> total,
   state_->last = progress;
   (*state_->notify)(notification_message("notifications/progress", *text));
 }
+
+struct Logger::State {
+  const Notify* notify{};
+  std::optional<LogLevel> threshold{};
+};
+
+bool Logger::wants(const LogLevel level) const noexcept {
+  return state_ != nullptr && (!state_->threshold.has_value() || level >= *state_->threshold);
+}
+
+void Logger::log(const LogLevel level, const std::string_view message) const {
+  if (!wants(level)) {
+    return;
+  }
+  const std::string data = scrydantic::escape_json_string(message);
+  log(level, Json{.text = data});
+}
+
+void Logger::log(const LogLevel level, const Json& data) const {
+  if (!wants(level)) {
+    return;
+  }
+  const std::optional<std::string> params =
+      encoded(wire::LogParams{.data = data, .level = level});
+  if (params.has_value()) {
+    (*state_->notify)(notification_message("notifications/message", *params));
+  }
+}
+
+struct Connection::Call {
+  Progress::State progress{};
+  Logger::State logger{};
+};
 
 Server::Server(std::string name, std::string version)
     : name_{std::move(name)}, version_{std::move(version)},
@@ -308,6 +353,9 @@ wire::ServerCapabilities Server::capabilities() const {
   if (!prompts_.empty()) {
     capabilities.prompts = wire::PromptsCapability{};
   }
+  if (logs_) {
+    capabilities.logging = wire::LoggingCapability{};
+  }
   if (!resources_.empty()) {
     capabilities.resources = wire::ResourcesCapability{};
   }
@@ -380,6 +428,10 @@ struct Connection::Request {
   bool modern{};
   // Stops when the client cancels the request.
   std::stop_token stop{};
+  // Whether the client takes log messages about the request, and the least
+  // severe it takes, or none for every one.
+  bool logs{};
+  std::optional<LogLevel> log_level{};
 
   [[nodiscard]] std::string result(const std::string_view json) const {
     return result_message(id, json);
@@ -510,6 +562,16 @@ std::optional<std::string> Connection::dispatch(Request& request,
                                  "\"] is required and must be an object"}));
     }
     request.modern = true;
+    if (const std::optional<JsonView> level = meta->find(log_level_key)) {
+      const std::optional<LogLevel> parsed = level->string().and_then(log_level_named);
+      if (!parsed.has_value()) {
+        return request.error(wire::invalid_params,
+                             join({"Invalid params: _meta[\"", log_level_key,
+                                   "\"] must name a log level, such as \"info\""}));
+      }
+      request.logs = true;
+      request.log_level = parsed;
+    }
     if (request.method == "server/discover") {
       return discover(request);
     }
@@ -540,6 +602,14 @@ std::optional<std::string> Connection::dispatch(Request& request,
               " on each request, or send initialize first for ",
               legacy_protocol_versions[0]}));
   }
+  // Until the client sets a level, every message is sent.
+  request.logs = true;
+  if (const int level = log_level_.load(std::memory_order_acquire); level >= 0) {
+    request.log_level = static_cast<LogLevel>(level);
+  }
+  if (request.method == "logging/setLevel" && server_->logs_) {
+    return set_log_level(request);
+  }
   if (request.method == "tools/list") {
     return list_tools(request);
   }
@@ -551,6 +621,18 @@ std::optional<std::string> Connection::dispatch(Request& request,
   }
   return request.error(wire::method_not_found,
                        join({"Method not found: ", request.method}));
+}
+
+std::string Connection::set_log_level(const Request& request) {
+  const std::optional<JsonView> level = request.param("level");
+  const std::optional<LogLevel> parsed =
+      level.has_value() ? level->string().and_then(log_level_named) : std::nullopt;
+  if (!parsed.has_value()) {
+    return request.error(wire::invalid_params,
+                         "Invalid params: level must name a log level, such as \"info\"");
+  }
+  log_level_.store(static_cast<int>(*parsed), std::memory_order_release);
+  return request.result("{}");
 }
 
 std::optional<std::string> Connection::serve_feature(const Request& request,
@@ -676,8 +758,8 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
                          "Invalid params: arguments must be an object");
   }
 
-  Progress::State progress{};
-  const Context context = context_of(request, progress, notify);
+  Call call{};
+  const Context context = context_of(request, call, notify);
 
   wire::CallToolResult reply{};
   if (request.modern) {
@@ -746,12 +828,19 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
   return text.has_value() ? request.result(*text) : request.internal_error();
 }
 
-Context Connection::context_of(const Request& request, Progress::State& progress,
+Context Connection::context_of(const Request& request, Call& call,
                                const Notify& notify) const {
+  Progress::State& progress = call.progress;
   Context context{.protocol_version =
                       request.modern ? modern_protocol_version : legacy_version(),
                   .progress = {},
+                  .logger = {},
                   .stop = request.stop};
+  if (notify && request.logs) {
+    call.logger.notify = &notify;
+    call.logger.threshold = request.log_level;
+    context.logger = Logger{&call.logger};
+  }
   const std::optional<JsonView> meta = request.param("_meta");
   const std::optional<JsonView> token =
       is_object(meta) ? meta->find("progressToken") : std::nullopt;
@@ -839,8 +928,8 @@ std::string Connection::read_resource(const Request& request, const Notify& noti
   if (!parsed) {
     return request.internal_error();
   }
-  Progress::State progress{};
-  const Context context = context_of(request, progress, notify);
+  Call call{};
+  const Context context = context_of(request, call, notify);
   scrydantic::Result<std::vector<ResourceContents>> contents;
   try {
     contents = found->read(context, *uri, *parsed);
@@ -918,8 +1007,8 @@ std::string Connection::get_prompt(const Request& request, const Notify& notify)
                          "Invalid params: arguments must be an object");
   }
 
-  Progress::State progress{};
-  const Context context = context_of(request, progress, notify);
+  Call call{};
+  const Context context = context_of(request, call, notify);
   scrydantic::Result<std::vector<PromptMessage>> messages;
   try {
     messages = found->get(context, *arguments);
