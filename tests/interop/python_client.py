@@ -12,6 +12,9 @@ difference.
 
 import asyncio
 import sys
+import time
+
+import anyio
 
 from mcp import Client, StdioServerParameters
 from mcp.shared.exceptions import MCPError
@@ -54,7 +57,11 @@ async def exercise(
             )
 
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-        check(f"{tag} tool names", list(tools), ["forecast", "cities", "download_archive"])
+        check(
+            f"{tag} tool names",
+            list(tools),
+            ["forecast", "cities", "download_archive", "watch"],
+        )
         check(
             f"{tag} forecast description",
             tools["forecast"].description,
@@ -130,6 +137,20 @@ async def exercise(
             progress,
             [(1.0, 3.0, "downloading"), (2.0, 3.0, "downloading"), (3.0, 3.0, "downloading")],
         )
+
+        # Two calls of a second each run side by side.
+        started = time.monotonic()
+        async with anyio.create_task_group() as group:
+            for city in ("Lima", "Oslo"):
+                group.start_soon(client.call_tool, "watch", {"city": city, "seconds": 1})
+        check(f"{tag} calls run side by side", time.monotonic() - started < 1.8, True)
+
+        # A call the client gives up on is cancelled, and the server goes on.
+        with anyio.move_on_after(0.3):
+            await client.call_tool("watch", {"city": "Lima", "seconds": 60})
+            raise SystemExit(f"FAIL {tag} a call of a minute returned at once")
+        result = await client.call_tool("watch", {"city": "Oslo", "seconds": 0})
+        check(f"{tag} served after a cancellation", result.content[0].text, "no storm warnings for Oslo")
 
         try:
             await client.call_tool("fly", {})

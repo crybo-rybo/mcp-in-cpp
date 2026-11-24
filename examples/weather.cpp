@@ -9,9 +9,13 @@
 //     "io.modelcontextprotocol/clientCapabilities":{}}}}' | tr -d '\n' |
 //     ./mcp_weather_example
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <expected>
 #include <mcp/mcp.hpp>
+#include <mutex>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -44,6 +48,17 @@ struct Forecast {
     progress.report(step, 3.0, "downloading");
   }
   return "archive of " + city + " is ready";
+}
+
+[[= mcp::tool{"Watch a city for storm warnings for a number of seconds"}]] std::string
+    watch(std::string city, [[= mcp::range{.min = 0, .max = 60}]] std::int32_t seconds,
+          std::stop_token stop) {
+  // A call that the client cancels ends at once, and its result is not sent.
+  std::mutex mutex;
+  std::condition_variable_any changed;
+  std::unique_lock lock{mutex};
+  changed.wait_for(lock, stop, std::chrono::seconds{seconds}, [] { return false; });
+  return "no storm warnings for " + city;
 }
 
 } // namespace weather

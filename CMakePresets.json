@@ -1,71 +1,167 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 30, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 30,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
-      "cacheVariables": { "CMAKE_EXPORT_COMPILE_COMMANDS": true }
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
     },
     {
       "name": "dev",
       "displayName": "Debug build with libstdc++ assertions",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "release",
       "displayName": "Optimized build",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
     },
     {
       "name": "asan",
       "displayName": "Address and undefined behavior sanitizers",
       "inherits": "dev",
-      "cacheVariables": { "MCP_SANITIZER": "address-undefined" }
+      "cacheVariables": {
+        "MCP_SANITIZER": "address-undefined"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Thread sanitizer",
+      "inherits": "dev",
+      "cacheVariables": {
+        "MCP_SANITIZER": "thread"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev" },
-    { "name": "release", "configurePreset": "release" },
-    { "name": "asan", "configurePreset": "asan" }
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan"
+    }
   ],
   "testPresets": [
     {
       "name": "base",
       "hidden": true,
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     },
-    { "name": "dev", "inherits": "base", "configurePreset": "dev" },
-    { "name": "release", "inherits": "base", "configurePreset": "release" },
-    { "name": "asan", "inherits": "base", "configurePreset": "asan" }
+    {
+      "name": "dev",
+      "inherits": "base",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "configurePreset": "release"
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "configurePreset": "tsan"
+    }
   ],
   "workflowPresets": [
     {
       "name": "dev",
       "steps": [
-        { "type": "configure", "name": "dev" },
-        { "type": "build", "name": "dev" },
-        { "type": "test", "name": "dev" }
+        {
+          "type": "configure",
+          "name": "dev"
+        },
+        {
+          "type": "build",
+          "name": "dev"
+        },
+        {
+          "type": "test",
+          "name": "dev"
+        }
       ]
     },
     {
       "name": "release",
       "steps": [
-        { "type": "configure", "name": "release" },
-        { "type": "build", "name": "release" },
-        { "type": "test", "name": "release" }
+        {
+          "type": "configure",
+          "name": "release"
+        },
+        {
+          "type": "build",
+          "name": "release"
+        },
+        {
+          "type": "test",
+          "name": "release"
+        }
       ]
     },
     {
       "name": "asan",
       "steps": [
-        { "type": "configure", "name": "asan" },
-        { "type": "build", "name": "asan" },
-        { "type": "test", "name": "asan" }
+        {
+          "type": "configure",
+          "name": "asan"
+        },
+        {
+          "type": "build",
+          "name": "asan"
+        },
+        {
+          "type": "test",
+          "name": "asan"
+        }
+      ]
+    },
+    {
+      "name": "tsan",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "tsan"
+        },
+        {
+          "type": "build",
+          "name": "tsan"
+        },
+        {
+          "type": "test",
+          "name": "tsan"
+        }
       ]
     }
   ]

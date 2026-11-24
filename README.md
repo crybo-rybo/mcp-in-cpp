@@ -47,11 +47,12 @@ change.
 | Tool results | Text content, and structured content with the tool's output schema. A returned string is sent as the text itself. |
 | Tool failures | Arguments that do not decode and a tool's own refusal are tool errors with the text meant for the model. A tool that throws, or whose result breaks its own schema, is a tool error that says only `the tool failed`; the reason goes to the server's log. An unknown tool or a malformed call is a JSON-RPC error. |
 | Progress | A tool takes an `mcp::Progress` parameter in any position. It is not in the input schema, and its reports reach a client that sent a progress token. |
-| Transport | stdio: `mcp::serve_stdio`. `mcp::Connection::handle` takes one message and returns the response, for a transport of your own. |
+| Cancellation | A tool takes a `std::stop_token` parameter in any position, or reads `mcp::Context::stop`. It stops when the client cancels the call, and a cancelled call gets no response. |
+| Concurrency | `mcp::serve_stdio` reads on one thread and runs up to eight requests at once on others (`StdioOptions::concurrency`; one runs them in order). A server's tools must then be safe to call side by side. |
+| Transport | stdio: `mcp::serve_stdio`. `mcp::Connection::handle` takes one message and returns the response, and may be called from several threads, for a transport of your own. |
 
-Not there yet: cancellation and concurrent calls (messages are handled one at a
-time, so a `notifications/cancelled` arrives after its call has finished),
-Streamable HTTP, resources, prompts, elicitation, authorization, and a client.
+Not there yet: Streamable HTTP, resources, prompts, elicitation, authorization,
+and a client.
 
 ## Requirements
 
@@ -65,6 +66,7 @@ Scrydantic is fetched at configure time, pinned to its 0.4.0 release.
 ```sh
 cmake --workflow --preset dev      # configure, build, and run the tests
 cmake --workflow --preset asan     # the same under the address and UB sanitizers
+cmake --workflow --preset tsan     # the same under the thread sanitizer (Linux)
 ```
 
 Set `CXX` on the first configure if `g++` is not GCC 16.2.

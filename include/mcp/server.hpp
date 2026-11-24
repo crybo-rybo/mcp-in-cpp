@@ -7,6 +7,7 @@
 /// standard streams.
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <functional>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -102,6 +104,13 @@ struct Context {
   std::string_view protocol_version{};
   /// Reports progress on this call.
   Progress progress{};
+  /// Stops when the client cancels the call or goes away. A tool that runs for
+  /// a while checks it, or waits on it, and returns early. What it returns
+  /// then is not sent: a cancelled call gets no response.
+  ///
+  /// A tool may also take a `std::stop_token` parameter in any position, which
+  /// the server fills in with this one, outside the input schema.
+  std::stop_token stop{};
 };
 
 /// What an MCP server offers: its identity and its tools.
@@ -196,8 +205,8 @@ private:
 /// `initialize` request starts a legacy session instead, which lasts as long as
 /// the connection object. One connection serves both kinds.
 ///
-/// handle() is not synchronized: a transport calls it with one message at a
-/// time.
+/// handle() may be called from several threads at once, so a transport can
+/// serve calls side by side. The server's tools then run side by side too.
 class Connection {
 public:
   /// @param server The server to speak for. It must outlive the connection and
@@ -210,17 +219,24 @@ public:
   /// exception ends that call as a failed call.
   /// @param message The message's text: one JSON value.
   /// @param notify Receives the notifications that belong to this request
-  /// while it is handled. An empty function discards them.
+  /// while it is handled. An empty function discards them. With several calls
+  /// in flight it is called from several threads.
+  /// @param stop Stops when the client cancels this request or goes away. The
+  /// transport owns it, and a tool receives it as Context::stop.
   /// @return The response to send, or nothing where the protocol sends none: for
   /// a notification, for a response, and for a subscription, which stays open.
+  /// A response to a request that was cancelled meanwhile is the transport's
+  /// to drop.
   [[nodiscard]] std::optional<std::string> handle(std::string_view message,
-                                                  const Notify& notify = {});
+                                                  const Notify& notify = {},
+                                                  std::stop_token stop = {});
 
 private:
   struct Request;
 
   [[nodiscard]] std::optional<std::string> dispatch(Request& request,
                                                     const Notify& notify);
+  [[nodiscard]] std::string_view legacy_version() const noexcept;
   [[nodiscard]] std::string initialize(const Request& request);
   [[nodiscard]] std::string discover(const Request& request) const;
   [[nodiscard]] std::string list_tools(const Request& request) const;
@@ -230,11 +246,20 @@ private:
                                                   const Notify& notify) const;
 
   const Server* server_;
-  // The revision an `initialize` request settled on, or empty before one.
-  std::string_view legacy_version_{};
+  // The position in legacy_protocol_versions of the revision an `initialize`
+  // request settled on, or none before one.
+  static constexpr int no_legacy_version = -1;
+  std::atomic<int> legacy_version_{no_legacy_version};
 };
 
 } // namespace mcp
+
+/// Lets a tool take a std::stop_token parameter in any position: Context::stop.
+template <> struct scrydantic::supplier<std::stop_token, mcp::Context> {
+  static std::stop_token supply(const mcp::Context& context) noexcept {
+    return context.stop;
+  }
+};
 
 /// Lets a tool take an mcp::Progress parameter in any position.
 template <> struct scrydantic::supplier<mcp::Progress, mcp::Context> {

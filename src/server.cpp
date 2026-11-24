@@ -9,6 +9,7 @@
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
+#include <stop_token>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -270,6 +271,8 @@ struct Connection::Request {
   std::optional<JsonView> params{};
   // Whether the request is served under the modern revision.
   bool modern{};
+  // Stops when the client cancels the request.
+  std::stop_token stop{};
 
   [[nodiscard]] std::string result(const std::string_view json) const {
     return result_message(id, json);
@@ -291,7 +294,8 @@ struct Connection::Request {
 };
 
 std::optional<std::string> Connection::handle(const std::string_view message,
-                                              const Notify& notify) {
+                                              const Notify& notify,
+                                              std::stop_token stop) {
   const scrydantic::Result<JsonView> document = JsonView::parse(message);
   if (!document) {
     return error_message({}, wire::parse_error,
@@ -337,11 +341,12 @@ std::optional<std::string> Connection::handle(const std::string_view message,
 
   if (!id.has_value()) {
     // A notification. `notifications/initialized` needs no action, and
-    // `notifications/cancelled` names a request that has already been answered:
-    // nothing outlives handle().
+    // `notifications/cancelled` is the transport's: it stops the token it
+    // passed with the request it names.
     return std::nullopt;
   }
 
+  request.stop = std::move(stop);
   request.params = document->find("params");
   if (request.params.has_value() && request.params->kind() != JsonKind::object) {
     return request.error(wire::invalid_params,
@@ -417,7 +422,7 @@ std::optional<std::string> Connection::dispatch(Request& request,
   if (request.method == "ping") {
     return request.result("{}");
   }
-  if (legacy_version_.empty()) {
+  if (legacy_version().empty()) {
     return request.error(
         wire::invalid_params,
         join({"Invalid params: the request names no protocol version. Send _meta[\"",
@@ -457,8 +462,17 @@ std::string Connection::initialize(const Request& request) {
   if (!result.has_value()) {
     return request.internal_error();
   }
-  legacy_version_ = chosen;
+  legacy_version_.store(
+      static_cast<int>(known != nullptr ? known - legacy_protocol_versions : 0),
+      std::memory_order_release);
   return request.result(*result);
+}
+
+std::string_view Connection::legacy_version() const noexcept {
+  const int position = legacy_version_.load(std::memory_order_acquire);
+  return position == no_legacy_version
+             ? std::string_view{}
+             : legacy_protocol_versions[static_cast<std::size_t>(position)];
 }
 
 std::string Connection::discover(const Request& request) const {
@@ -517,7 +531,9 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
 
   Progress::State progress{};
   Context context{.protocol_version =
-                      request.modern ? modern_protocol_version : legacy_version_};
+                      request.modern ? modern_protocol_version : legacy_version(),
+                  .progress = {},
+                  .stop = request.stop};
   const std::optional<JsonView> meta = request.param("_meta");
   const std::optional<JsonView> token =
       is_object(meta) ? meta->find("progressToken") : std::nullopt;
