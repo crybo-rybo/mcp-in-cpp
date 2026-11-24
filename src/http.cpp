@@ -331,11 +331,10 @@ struct Session {
   Connection connection;
   std::mutex mutex;
   std::unordered_map<std::string, std::shared_ptr<std::stop_source>> running;
-  Clock::time_point used{Clock::now()};
 
   void cancel(const std::string& id) {
     const std::scoped_lock lock{mutex};
-    if (const auto found = running.find(id); found != running.end()) {
+    if (const auto found = running.find(id); found != running.end() && found->second) {
       found->second->request_stop();
     }
   }
@@ -343,7 +342,9 @@ struct Session {
   void cancel_all() {
     const std::scoped_lock lock{mutex};
     for (auto& [id, stop] : running) {
-      stop->request_stop();
+      if (stop) {
+        stop->request_stop();
+      }
     }
   }
 };
@@ -373,7 +374,18 @@ struct HttpEndpoint::State {
   // Serves every request of 2026-07-28, which carries all it needs.
   Connection modern;
   std::mutex mutex;
-  std::unordered_map<std::string, std::shared_ptr<Session>> sessions;
+  // A session, and when a request last named it.
+  struct Kept {
+    std::shared_ptr<Session> session;
+    Clock::time_point used;
+  };
+  std::unordered_map<std::string, Kept> sessions;
+
+  static void cancel(const std::shared_ptr<Session>& session) {
+    if (session != nullptr) {
+      session->cancel_all();
+    }
+  }
 
   [[nodiscard]] std::shared_ptr<Session> find(const std::string& id) {
     const std::scoped_lock lock{mutex};
@@ -382,30 +394,34 @@ struct HttpEndpoint::State {
       return nullptr;
     }
     const Clock::time_point now = Clock::now();
-    if (now - found->second->used > options.session_timeout) {
-      found->second->cancel_all();
+    if (now - found->second.used > options.session_timeout) {
+      cancel(found->second.session);
       sessions.erase(found);
       return nullptr;
     }
-    found->second->used = now;
-    return found->second;
+    found->second.used = now;
+    return found->second.session;
   }
 
   std::string keep(std::shared_ptr<Session> session) {
     const std::scoped_lock lock{mutex};
     const Clock::time_point now = Clock::now();
     std::erase_if(sessions, [&](const auto& entry) {
-      return now - entry.second->used > options.session_timeout;
+      const bool expired = now - entry.second.used > options.session_timeout;
+      if (expired) {
+        cancel(entry.second.session);
+      }
+      return expired;
     });
-    while (!sessions.empty() && sessions.size() >= std::max<std::size_t>(options.max_sessions, 1)) {
-      const auto oldest = std::ranges::min_element(sessions, {}, [](const auto& entry) {
-        return entry.second->used;
-      });
-      oldest->second->cancel_all();
+    const std::size_t most = std::max<std::size_t>(options.max_sessions, 1);
+    while (!sessions.empty() && sessions.size() >= most) {
+      const auto oldest =
+          std::ranges::min_element(sessions, {}, [](const auto& entry) { return entry.second.used; });
+      cancel(oldest->second.session);
       sessions.erase(oldest);
     }
     std::string id = new_session_id();
-    sessions.emplace(id, std::move(session));
+    sessions.emplace(id, Kept{.session = std::move(session), .used = now});
     return id;
   }
 
@@ -417,10 +433,10 @@ struct HttpEndpoint::State {
       if (found == sessions.end()) {
         return false;
       }
-      session = std::move(found->second);
+      session = std::move(found->second.session);
       sessions.erase(found);
     }
-    session->cancel_all();
+    cancel(session);
     return true;
   }
 
