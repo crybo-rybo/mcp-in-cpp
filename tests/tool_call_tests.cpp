@@ -68,11 +68,22 @@ TEST_CASE("a call may carry members the server has no use for") {
   const mcp::Server server = support::sample_server(log);
   mcp::Connection connection{server};
 
-  CHECK(
-      connection.handle(modern(
-          "1", "tools/call",
-          R"("name":"add","arguments":{"a":2,"b":3},"requestState":"abc","inputResponses":{})")) ==
-      called("1", text_content("5", false), "5"));
+  // Answers to questions the tool never asks.
+  CHECK(connection.handle(modern("1", "tools/call",
+                                 R"("name":"add","arguments":{"a":2,"b":3},"task":{},)"
+                                 R"("inputResponses":{"x":{"action":"accept"}})")) ==
+        called("1", text_content("5", false), "5"));
+}
+
+TEST_CASE("a requestState that the server did not sign is invalid params") {
+  std::vector<std::string> log;
+  const mcp::Server server = support::sample_server(log);
+  mcp::Connection connection{server};
+
+  CHECK(connection.handle(modern("1", "tools/call",
+                                 R"("name":"add","arguments":{"a":2,"b":3},"requestState":"abc")")) ==
+        R"({"error":{"code":-32602,"data":{"reason":"invalid_request_state"},)"
+        R"("message":"Invalid or expired requestState"},"id":1,"jsonrpc":"2.0"})");
 }
 
 TEST_CASE("a malformed call is a protocol error") {

@@ -1,5 +1,7 @@
 /// @file
 /// Content for a model: the blocks of a tool's result or a prompt's message.
+/// A block read from a client keeps what this library knows of it and passes
+/// over the rest, such as `annotations`.
 #pragma once
 
 #include <cstddef>
@@ -15,12 +17,13 @@
 namespace mcp {
 
 /// Text for the model.
-struct [[= scrydantic::tag{"text"}]] TextContent {
+struct [[ = scrydantic::tag{"text"}, = scrydantic::ignore_unknown ]] TextContent {
   std::string text;
 };
 
 /// An image, as base64 of its bytes. image() makes one from the bytes.
-struct [[ = scrydantic::tag{"image"}, = scrydantic::rename_all{scrydantic::camel_case} ]]
+struct [[ = scrydantic::tag{"image"}, = scrydantic::rename_all{scrydantic::camel_case},
+          = scrydantic::ignore_unknown ]]
 ImageContent {
   /// The image's bytes in base64.
   std::string data;
@@ -29,7 +32,8 @@ ImageContent {
 };
 
 /// A sound, as base64 of its bytes. audio() makes one from the bytes.
-struct [[ = scrydantic::tag{"audio"}, = scrydantic::rename_all{scrydantic::camel_case} ]]
+struct [[ = scrydantic::tag{"audio"}, = scrydantic::rename_all{scrydantic::camel_case},
+          = scrydantic::ignore_unknown ]]
 AudioContent {
   /// The sound's bytes in base64.
   std::string data;
@@ -39,7 +43,8 @@ AudioContent {
 
 /// What a resource holds: text, or bytes in base64 as `blob`. Exactly one of
 /// the two is set.
-struct [[ = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null ]]
+struct [[ = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null,
+          = scrydantic::ignore_unknown ]]
 ResourceContents {
   /// The resource's URI.
   std::string uri;
@@ -52,13 +57,14 @@ ResourceContents {
 };
 
 /// A resource whose contents come with the result.
-struct [[= scrydantic::tag{"resource"}]] EmbeddedResource {
+struct [[ = scrydantic::tag{"resource"}, = scrydantic::ignore_unknown ]] EmbeddedResource {
   ResourceContents resource;
 };
 
 /// A resource that the client can read for itself.
 struct [[ = scrydantic::tag{"resource_link"},
-          = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null ]]
+          = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null,
+          = scrydantic::ignore_unknown ]]
 ResourceLink {
   std::string uri;
   std::string name;

@@ -13,11 +13,14 @@
 #include <chrono>
 #include <cstddef>
 #include <expected>
+#include <mcp/ask.hpp>
 #include <mcp/binding.hpp>
 #include <mcp/content.hpp>
 #include <mcp/context.hpp>
 #include <memory>
 #include <meta>
+#include <mutex>
+#include <unordered_map>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <span>
@@ -120,6 +123,13 @@ public:
   /// Sets how long a client may treat the tool list as fresh (`ttlMs`). The
   /// default is zero: a client asks again whenever it needs the list.
   Server& list_ttl(std::chrono::milliseconds ttl);
+
+  /// Sets the key that signs the `requestState` a call hands its client under
+  /// 2026-07-28, which carries the answers of earlier rounds. The default is a
+  /// random key of the process's own, so a state comes back only to the process
+  /// that signed it; servers behind one address that share their clients set
+  /// one shared secret of 32 random bytes or more.
+  Server& request_state_key(std::string key);
 
   /// Sets where failures on the server's side are written. The default writes
   /// each line to standard error. An empty function discards them.
@@ -238,6 +248,8 @@ private:
   std::vector<BoundPrompt> prompts_{};
   // Whether a function of the server takes an mcp::Logger.
   bool logs_{};
+  // Signs a call's requestState.
+  std::string state_key_{};
   // The arrays of resources/list, resources/templates/list and prompts/list.
   std::string resource_list_{"[]"};
   std::string template_list_{"[]"};
@@ -306,6 +318,26 @@ private:
   [[nodiscard]] Context context_of(const Request& request, Call& call,
                                    const Notify& notify) const;
   [[nodiscard]] std::string set_log_level(const Request& request);
+  // Sets up what a call may ask the client. Under 2026-07-28 it reads the
+  // answers the request brings, and returns the error for a requestState that
+  // is not the server's. `target` and `arguments` are what the state is bound
+  // to: the name or URI the request names, and its arguments.
+  [[nodiscard]] std::optional<std::string> prepare_inquiry(const Request& request, Call& call,
+                                                         const Notify& notify,
+                                                         std::string_view target,
+                                                         std::string_view arguments) const;
+  // The response for a call that asked what it could not, or that still has
+  // questions for the client, or nothing for one that is done.
+  [[nodiscard]] std::optional<std::string> inquiry_outcome(const Request& request, Call& call,
+                                                         std::string_view target,
+                                                         std::string_view arguments) const;
+  // Sends a request to the client on the call's stream and waits for the
+  // response, as a handshake session asks.
+  [[nodiscard]] Result<std::string> ask_client(std::string_view method,
+                                               std::string_view params, const Notify& notify,
+                                               const std::stop_token& stop) const;
+  // Hands the client's response to the call that waits for it.
+  void answered(const std::string& id, const scrydantic::JsonView& response) const;
 
   const Server* server_;
   // The position in legacy_protocol_versions of the revision an `initialize`
@@ -315,6 +347,14 @@ private:
   // The least severe LogLevel a handshake session takes, or -1 before
   // logging/setLevel.
   std::atomic<int> log_level_{-1};
+  // What a handshake session's client can be asked: 1 elicitation, 2
+  // sampling, 4 roots.
+  std::atomic<unsigned> legacy_abilities_{0};
+  // The requests of the server's that calls wait on, by id.
+  struct Waiting;
+  mutable std::mutex waiting_mutex_;
+  mutable std::unordered_map<std::string, std::shared_ptr<Waiting>> waiting_;
+  mutable std::atomic<std::int64_t> next_request_id_{0};
 };
 
 } // namespace mcp

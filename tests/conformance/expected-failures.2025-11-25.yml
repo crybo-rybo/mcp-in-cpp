@@ -1,10 +1,6 @@
-# The scored scenarios of 2025-11-25 that the fixture does not pass yet, each
-# for a feature the library does not have yet. The suite fails when one of
-# these starts to pass, so the list only shrinks.
+# The scored scenarios of 2025-11-25 that the fixture does not pass, each for a
+# feature the library does not have yet. The suite fails when one of these
+# starts to pass, so the list only shrinks.
 server:
-  - tools-call-sampling
-  - tools-call-elicitation
-  - elicitation-sep1034-defaults
-  - elicitation-sep1330-enums
   - resources-subscribe
   - resources-unsubscribe

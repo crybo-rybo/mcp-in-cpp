@@ -1,7 +1,15 @@
+#include "inquiry.hpp"
 #include "jsonrpc.hpp"
+#include "sha256.hpp"
 #include "wire.hpp"
 
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstdint>
+#include <mcp/ask.hpp>
+#include <mutex>
+#include <random>
 #include <exception>
 #include <initializer_list>
 #include <iostream>
@@ -32,6 +40,152 @@ constexpr std::string_view protocol_version_key =
 constexpr std::string_view client_capabilities_key =
     "io.modelcontextprotocol/clientCapabilities";
 constexpr std::string_view log_level_key = "io.modelcontextprotocol/logLevel";
+
+[[nodiscard]] bool is_object(const std::optional<JsonView>& value) noexcept;
+
+// The lifetime of a requestState: how long a client may take to answer.
+constexpr std::chrono::seconds state_lifetime{600};
+
+[[nodiscard]] std::string base64url(const std::string_view bytes) {
+  std::string text = base64(bytes);
+  while (!text.empty() && text.back() == '=') {
+    text.pop_back();
+  }
+  for (char& c : text) {
+    c = c == '+' ? '-' : c == '/' ? '_' : c;
+  }
+  return text;
+}
+
+[[nodiscard]] std::optional<std::string> from_base64url(const std::string_view text) {
+  std::string bytes;
+  std::uint32_t buffer = 0;
+  unsigned bits = 0;
+  for (const char c : text) {
+    std::uint32_t value = 0;
+    if (c >= 'A' && c <= 'Z') {
+      value = static_cast<std::uint32_t>(c - 'A');
+    } else if (c >= 'a' && c <= 'z') {
+      value = static_cast<std::uint32_t>(c - 'a' + 26);
+    } else if (c >= '0' && c <= '9') {
+      value = static_cast<std::uint32_t>(c - '0' + 52);
+    } else if (c == '-') {
+      value = 62;
+    } else if (c == '_') {
+      value = 63;
+    } else {
+      return std::nullopt;
+    }
+    buffer = (buffer << 6U) | value;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes += static_cast<char>((buffer >> bits) & 0xFFU);
+    }
+  }
+  return bytes;
+}
+
+[[nodiscard]] std::string digest_text(const crypto::Digest& digest) {
+  return std::string{reinterpret_cast<const char*>(digest.data()), digest.size()};
+}
+
+// What a requestState is bound to: the method and the request it answers.
+[[nodiscard]] std::string state_binding(const std::string_view method,
+                                        const std::string_view target,
+                                        const std::string_view arguments) {
+  return base64url(digest_text(crypto::sha256(join({method, "\n", target, "\n", arguments}))));
+}
+
+[[nodiscard]] std::int64_t unix_seconds() {
+  return std::chrono::duration_cast<std::chrono::seconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+// The requestState that carries a call's answers to its next round: the
+// answers, what they are bound to, and when they expire, signed with the
+// server's key.
+[[nodiscard]] std::string seal_state(const std::string_view key,
+                                     const std::unordered_map<std::string, std::string>& answers,
+                                     const std::string_view binding) {
+  std::string payload{R"({"answers":{)"};
+  bool first = true;
+  for (const auto& [name, answer] : answers) {
+    if (!first) {
+      payload += ',';
+    }
+    first = false;
+    payload += scrydantic::escape_json_string(name);
+    payload += ':';
+    payload += answer;
+  }
+  payload += R"(},"binding":")";
+  payload += binding;
+  payload += R"(","expires":)";
+  payload += std::to_string(unix_seconds() + state_lifetime.count());
+  payload += '}';
+  return base64url(payload) + "." + base64url(digest_text(crypto::hmac_sha256(key, payload)));
+}
+
+// The answers a requestState carries, or nothing when it is not one this
+// server signed for this request, or it has expired.
+[[nodiscard]] std::optional<std::unordered_map<std::string, std::string>>
+open_state(const std::string_view key, const std::string_view state,
+           const std::string_view binding) {
+  const std::size_t dot = state.find('.');
+  if (dot == std::string_view::npos) {
+    return std::nullopt;
+  }
+  const std::optional<std::string> payload = from_base64url(state.substr(0, dot));
+  const std::optional<std::string> mac = from_base64url(state.substr(dot + 1));
+  if (!payload.has_value() || !mac.has_value() || mac->size() != 32) {
+    return std::nullopt;
+  }
+  crypto::Digest given{};
+  std::copy(mac->begin(), mac->end(), reinterpret_cast<char*>(given.data()));
+  if (!crypto::equal(given, crypto::hmac_sha256(key, *payload))) {
+    return std::nullopt;
+  }
+  const scrydantic::Result<JsonView> document = JsonView::parse(*payload);
+  if (!document) {
+    return std::nullopt;
+  }
+  const std::optional<JsonView> bound = document->find("binding");
+  const std::optional<JsonView> expires = document->find("expires");
+  const std::optional<JsonView> answers = document->find("answers");
+  if (!bound.has_value() || bound->string() != binding || !expires.has_value() ||
+      expires->number().value_or(0) < static_cast<double>(unix_seconds()) || !is_object(answers)) {
+    return std::nullopt;
+  }
+  std::unordered_map<std::string, std::string> found;
+  for (std::size_t index = 0; index < answers->size(); ++index) {
+    const std::string_view name = answers->key_at(index).value_or("");
+    found.emplace(name, answers->find(name)->to_json().text);
+  }
+  return found;
+}
+
+// Whether a client's capabilities let it be asked each kind of question.
+struct ClientAbilities {
+  bool elicitation{};
+  bool sampling{};
+  bool roots{};
+};
+
+[[nodiscard]] ClientAbilities abilities_in(const std::optional<JsonView>& capabilities) {
+  if (!is_object(capabilities)) {
+    return {};
+  }
+  const std::optional<JsonView> elicitation = capabilities->find("elicitation");
+  // An elicitation capability without `form` still has it, unless it names
+  // only `url`.
+  const bool form = is_object(elicitation) &&
+                    (elicitation->find("form").has_value() || !elicitation->find("url").has_value());
+  return {.elicitation = form,
+          .sampling = capabilities->find("sampling").has_value(),
+          .roots = capabilities->find("roots").has_value()};
+}
 
 [[nodiscard]] std::optional<LogLevel> log_level_named(const std::string_view name) {
   constexpr std::string_view names[] = {"debug", "info",     "notice", "warning",
@@ -182,11 +336,33 @@ void Logger::log(const LogLevel level, const Json& data) const {
 struct Connection::Call {
   Progress::State progress{};
   Logger::State logger{};
+  detail::Inquiry inquiry{};
+};
+
+// A request of the server's to the client, waiting for its response.
+struct Connection::Waiting {
+  std::mutex mutex;
+  std::condition_variable_any done;
+  // The response, once it came.
+  std::optional<std::string> response;
 };
 
 Server::Server(std::string name, std::string version)
     : name_{std::move(name)}, version_{std::move(version)},
-      log_{[](const std::string_view line) { std::cerr << line << '\n'; }} {}
+      log_{[](const std::string_view line) { std::cerr << line << '\n'; }} {
+  std::random_device device;
+  for (int word = 0; word < 8; ++word) {
+    const std::uint32_t value = device();
+    for (unsigned shift = 0; shift < 32; shift += 8) {
+      state_key_ += static_cast<char>((value >> shift) & 0xFFU);
+    }
+  }
+}
+
+Server& Server::request_state_key(std::string key) {
+  state_key_ = std::move(key);
+  return *this;
+}
 
 Server& Server::instructions(std::string text) {
   instructions_ = std::move(text);
@@ -486,7 +662,8 @@ std::optional<std::string> Connection::handle(const std::string_view message,
   const std::optional<JsonView> method = document->find("method");
   if (!method.has_value()) {
     if (document->find("result").has_value() || document->find("error").has_value()) {
-      // A response. The server sends no requests, so it answers none of its own.
+      // A response to a request of the server's: a call waits for it.
+      answered(request.id, *document);
       return std::nullopt;
     }
     return error_message(request.id, wire::invalid_request,
@@ -689,6 +866,10 @@ std::string Connection::initialize(const Request& request) {
   if (!result.has_value()) {
     return request.internal_error();
   }
+  const ClientAbilities abilities = abilities_in(request.param("capabilities"));
+  legacy_abilities_.store((abilities.elicitation ? 1U : 0U) | (abilities.sampling ? 2U : 0U) |
+                              (abilities.roots ? 4U : 0U),
+                          std::memory_order_release);
   legacy_version_.store(
       static_cast<int>(known != nullptr ? known - legacy_protocol_versions : 0),
       std::memory_order_release);
@@ -758,7 +939,12 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
                          "Invalid params: arguments must be an object");
   }
 
+  const std::string argument_text = arguments->to_json().text;
   Call call{};
+  if (std::optional<std::string> refused =
+          prepare_inquiry(request, call, notify, tool->name, argument_text)) {
+    return std::move(*refused);
+  }
   const Context context = context_of(request, call, notify);
 
   wire::CallToolResult reply{};
@@ -790,6 +976,10 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
     server_->log_line(join({"tool ", tool->name, " threw: ", thrown.what()}));
   } catch (...) {
     server_->log_line(join({"tool ", tool->name, " threw an unknown exception"}));
+  }
+  if (std::optional<std::string> asked =
+          inquiry_outcome(request, call, tool->name, argument_text)) {
+    return std::move(*asked);
   }
 
   if (threw) {
@@ -835,7 +1025,8 @@ Context Connection::context_of(const Request& request, Call& call,
                       request.modern ? modern_protocol_version : legacy_version(),
                   .progress = {},
                   .logger = {},
-                  .stop = request.stop};
+                  .stop = request.stop,
+                  .inquiry = &call.inquiry};
   if (notify && request.logs) {
     call.logger.notify = &notify;
     call.logger.threshold = request.log_level;
@@ -850,6 +1041,162 @@ Context Connection::context_of(const Request& request, Call& call,
     context.progress = Progress{&progress};
   }
   return context;
+}
+
+std::optional<std::string> Connection::prepare_inquiry(const Request& request, Call& call,
+                                                       const Notify& notify,
+                                                       const std::string_view target,
+                                                       const std::string_view arguments) const {
+  detail::Inquiry& inquiry = call.inquiry;
+  inquiry.modern = request.modern;
+  if (!request.modern) {
+    const unsigned abilities = legacy_abilities_.load(std::memory_order_acquire);
+    inquiry.elicitation = (abilities & 1U) != 0;
+    inquiry.sampling = (abilities & 2U) != 0;
+    inquiry.roots = (abilities & 4U) != 0;
+    inquiry.form_mode = legacy_version() != "2025-06-18";
+    inquiry.round_trip = [this, &notify, stop = request.stop](const std::string_view method,
+                                                             const std::string_view params) {
+      return ask_client(method, params, notify, stop);
+    };
+    return std::nullopt;
+  }
+
+  const std::optional<JsonView> meta = request.param("_meta");
+  const ClientAbilities abilities = abilities_in(meta->find(client_capabilities_key));
+  inquiry.elicitation = abilities.elicitation;
+  inquiry.sampling = abilities.sampling;
+  inquiry.roots = abilities.roots;
+  if (const std::optional<JsonView> state = request.param("requestState")) {
+    const std::optional<std::string_view> text = state->string();
+    std::optional<std::unordered_map<std::string, std::string>> answers =
+        text.has_value()
+            ? open_state(server_->state_key_, *text,
+                         state_binding(request.method, target, arguments))
+            : std::nullopt;
+    if (!answers.has_value()) {
+      return request.error(wire::invalid_params, "Invalid or expired requestState",
+                           R"({"reason":"invalid_request_state"})");
+    }
+    inquiry.answers = std::move(*answers);
+  }
+  if (const std::optional<JsonView> responses = request.param("inputResponses")) {
+    if (responses->kind() != JsonKind::object) {
+      return request.error(wire::invalid_params,
+                           "Invalid params: inputResponses must be an object");
+    }
+    for (std::size_t index = 0; index < responses->size(); ++index) {
+      const std::string_view name = responses->key_at(index).value_or("");
+      inquiry.answers.insert_or_assign(std::string{name}, responses->find(name)->to_json().text);
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> Connection::inquiry_outcome(const Request& request, Call& call,
+                                                       const std::string_view target,
+                                                       const std::string_view arguments) const {
+  detail::Inquiry& inquiry = call.inquiry;
+  const std::scoped_lock lock{inquiry.mutex};
+  if (inquiry.missing.has_value()) {
+    return request.error(wire::missing_capability, "Missing required client capability",
+                         join({R"({"requiredCapabilities":)", *inquiry.missing, "}"}));
+  }
+  if (inquiry.invalid.has_value()) {
+    return request.error(wire::invalid_params, join({"Invalid params: ", *inquiry.invalid}));
+  }
+  if (!request.modern || inquiry.unanswered.empty()) {
+    return std::nullopt;
+  }
+  // The round ends here. The client answers every question, and sends the
+  // request again with the answers and the state that holds the earlier ones.
+  const std::optional<std::string> meta = encoded(server_->result_meta());
+  if (!meta.has_value()) {
+    return request.internal_error();
+  }
+  std::string result{R"({"_meta":)"};
+  result += *meta;
+  result += R"(,"inputRequests":{)";
+  bool first = true;
+  for (const auto& [name, question] : inquiry.unanswered) {
+    if (!first) {
+      result += ',';
+    }
+    first = false;
+    result += scrydantic::escape_json_string(name);
+    result += ':';
+    result += question;
+  }
+  result += R"(},"requestState":)";
+  result += scrydantic::escape_json_string(
+      seal_state(server_->state_key_, inquiry.answers,
+                 state_binding(request.method, target, arguments)));
+  result += R"(,"resultType":"input_required"})";
+  return request.result(result);
+}
+
+Result<std::string> Connection::ask_client(const std::string_view method,
+                                           const std::string_view params, const Notify& notify,
+                                           const std::stop_token& stop) const {
+  if (!notify) {
+    return std::unexpected(scrydantic::tool_error("the client cannot be reached from this call"));
+  }
+  const std::string id =
+      std::to_string(next_request_id_.fetch_add(1, std::memory_order_relaxed) + 1);
+  auto waiting = std::make_shared<Waiting>();
+  {
+    const std::scoped_lock lock{waiting_mutex_};
+    waiting_.insert_or_assign(id, waiting);
+  }
+  notify(join({R"({"id":)", id, R"(,"jsonrpc":"2.0","method":)",
+               scrydantic::escape_json_string(method), R"(,"params":)", params, "}"}));
+  std::optional<std::string> response;
+  {
+    std::unique_lock lock{waiting->mutex};
+    waiting->done.wait(lock, stop, [&] { return waiting->response.has_value(); });
+    response = std::move(waiting->response);
+  }
+  {
+    const std::scoped_lock lock{waiting_mutex_};
+    waiting_.erase(id);
+  }
+  if (!response.has_value()) {
+    return std::unexpected(scrydantic::tool_error("the call was cancelled"));
+  }
+  const scrydantic::Result<JsonView> document = JsonView::parse(*response);
+  if (!document) {
+    return std::unexpected(scrydantic::tool_error("the client's answer is not JSON"));
+  }
+  if (const std::optional<JsonView> result = document->find("result")) {
+    return result->to_json().text;
+  }
+  const std::optional<JsonView> error = document->find("error");
+  const std::optional<JsonView> text = error.has_value() ? error->find("message") : std::nullopt;
+  return std::unexpected(scrydantic::tool_error(
+      join({"the client answered with an error: ",
+            text.has_value() ? text->string().value_or("") : std::string_view{}})));
+}
+
+void Connection::answered(const std::string& id, const JsonView& response) const {
+  std::shared_ptr<Waiting> waiting;
+  {
+    const std::scoped_lock lock{waiting_mutex_};
+    const auto found = waiting_.find(id);
+    if (found == waiting_.end()) {
+      // No call waits for it: one that was cancelled, or an id the server
+      // never sent.
+      return;
+    }
+    waiting = found->second;
+  }
+  if (waiting == nullptr) {
+    return;
+  }
+  {
+    const std::scoped_lock lock{waiting->mutex};
+    waiting->response = response.to_json().text;
+  }
+  waiting->done.notify_all();
 }
 
 std::string Connection::list_resources(const Request& request, const bool templates) const {
@@ -929,6 +1276,9 @@ std::string Connection::read_resource(const Request& request, const Notify& noti
     return request.internal_error();
   }
   Call call{};
+  if (std::optional<std::string> refused = prepare_inquiry(request, call, notify, *uri, "{}")) {
+    return std::move(*refused);
+  }
   const Context context = context_of(request, call, notify);
   scrydantic::Result<std::vector<ResourceContents>> contents;
   try {
@@ -939,6 +1289,9 @@ std::string Connection::read_resource(const Request& request, const Notify& noti
   } catch (...) {
     server_->log_line(join({"resource ", found->uri, " threw an unknown exception"}));
     return request.internal_error();
+  }
+  if (std::optional<std::string> asked = inquiry_outcome(request, call, *uri, "{}")) {
+    return std::move(*asked);
   }
   if (!contents) {
     if (!contents.error().model_message.empty()) {
@@ -1007,7 +1360,12 @@ std::string Connection::get_prompt(const Request& request, const Notify& notify)
                          "Invalid params: arguments must be an object");
   }
 
+  const std::string argument_text = arguments->to_json().text;
   Call call{};
+  if (std::optional<std::string> refused =
+          prepare_inquiry(request, call, notify, found->name, argument_text)) {
+    return std::move(*refused);
+  }
   const Context context = context_of(request, call, notify);
   scrydantic::Result<std::vector<PromptMessage>> messages;
   try {
@@ -1018,6 +1376,10 @@ std::string Connection::get_prompt(const Request& request, const Notify& notify)
   } catch (...) {
     server_->log_line(join({"prompt ", found->name, " threw an unknown exception"}));
     return request.internal_error();
+  }
+  if (std::optional<std::string> asked =
+          inquiry_outcome(request, call, found->name, argument_text)) {
+    return std::move(*asked);
   }
   if (!messages) {
     if (!messages.error().model_message.empty()) {

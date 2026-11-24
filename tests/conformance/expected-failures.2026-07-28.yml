@@ -1,23 +1,5 @@
-# The scored scenarios of 2026-07-28 that the fixture does not pass yet, each
-# for a feature the library does not have yet. The suite fails when one of
-# these starts to pass, so the list only shrinks.
-server:
-  # Diagnostic tools that need sampling and elicitation.
-  - server-stateless:sep-2575-server-rejects-undeclared-capability
-  - server-stateless:sep-2575-missing-capability-http-400
-  - server-stateless:sep-2575-http-server-no-independent-requests-on-stream
-  # Input-required results: elicitation, sampling and roots.
-  - input-required-result-basic-elicitation
-  - input-required-result-basic-sampling
-  - input-required-result-basic-list-roots
-  - input-required-result-request-state
-  - input-required-result-multiple-input-requests
-  - input-required-result-multi-round
-  - input-required-result-non-tool-request
-  - input-required-result-result-type
-  - input-required-result-tampered-state
-  - input-required-result-capability-check
-  # Warnings, which a run with a baseline counts as failures: the server
-  # answers with an error where it could ask for the input again.
-  - input-required-result-missing-input-response
-  - input-required-result-ignore-extra-params
+# The scored scenarios of 2026-07-28 that the fixture does not pass, each for a
+# feature the library does not have yet. The suite fails when one of these
+# starts to pass, so the list only shrinks. It is empty: every scored scenario
+# passes.
+server: []

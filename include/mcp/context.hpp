@@ -17,6 +17,7 @@ namespace mcp {
 // them.
 using scrydantic::check;
 using scrydantic::description;
+using scrydantic::Error;
 using scrydantic::items;
 using scrydantic::Json;
 using scrydantic::keyword;
@@ -83,6 +84,10 @@ private:
   explicit Progress(State* state) noexcept : state_{state} {}
   State* state_{};
 };
+
+namespace detail {
+struct Inquiry;
+} // namespace detail
 
 /// How severe a log message is, from least to most, as syslog has it.
 enum class LogLevel : std::uint8_t {
@@ -154,6 +159,9 @@ struct Context {
   /// A tool may also take a `std::stop_token` parameter in any position, which
   /// the server fills in with this one, outside the input schema.
   std::stop_token stop{};
+  /// What the call has asked the client, for mcp::Elicitation, mcp::Sampling,
+  /// and mcp::Roots. The server's own.
+  detail::Inquiry* inquiry{};
 };
 
 } // namespace mcp

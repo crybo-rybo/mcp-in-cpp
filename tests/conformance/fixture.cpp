@@ -13,9 +13,13 @@
 #include <iostream>
 #include <mcp/httplib.hpp>
 #include <mcp/mcp.hpp>
+#include <optional>
+#include <scrydantic/scrydantic.hpp>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace conformance {
@@ -85,6 +89,272 @@ mcp::Content test_multiple_content_types() {
 [[= mcp::tool{"Tests error response handling"}]] mcp::Status test_error_handling() {
   return std::unexpected(
       mcp::tool_error("This tool intentionally returns an error for testing"));
+}
+
+// The answer to a form, as the reference server writes it.
+std::string answer_text(const std::string_view lead, const mcp::Answer<mcp::Json>& answer) {
+  constexpr std::string_view actions[] = {"accept", "decline", "cancel"};
+  return std::string{lead} + "action=" + std::string{actions[static_cast<int>(answer.action)]} +
+         ", content=" + answer.content.value_or(mcp::Json{.text = "{}"}).text;
+}
+
+std::string first_text(const mcp::Content& content) {
+  for (const mcp::ContentBlock& block : content) {
+    if (const auto* text = std::get_if<mcp::TextContent>(&block)) {
+      return text->text;
+    }
+  }
+  return "no response";
+}
+
+mcp::SamplingRequest ask_model(std::string text, const std::int64_t max_tokens) {
+  return {.messages = {{.role = mcp::Role::user, .content = mcp::TextContent{std::move(text)}}},
+          .max_tokens = max_tokens};
+}
+
+// 2025-11-25: requests of the server's to the client.
+
+[[= mcp::tool{"Tests server-initiated sampling (LLM completion request)"}]] std::string
+    test_sampling([[= mcp::description{"The prompt to send to the LLM"}]] std::string prompt,
+                  mcp::Sampling sampling) {
+  mcp::Result<mcp::SamplingResult> answer = sampling.create(ask_model(std::move(prompt), 100));
+  if (!answer) {
+    return "Sampling not supported or error: " + answer.error().model_message;
+  }
+  return "LLM response: " + first_text(answer->content);
+}
+
+struct UserResponse {
+  [[= mcp::description{"User's response"}]] std::string response;
+};
+
+[[= mcp::tool{"Tests server-initiated elicitation (user input request)"}]] std::string
+    test_elicitation([[= mcp::description{"The message to show the user"}]] std::string message,
+                     mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<mcp::Json>> answer =
+      ask.form(message, mcp::Json{.text = std::string{scrydantic::schema_v<UserResponse>}});
+  if (!answer) {
+    return "Elicitation not supported or error: " + answer.error().model_message;
+  }
+  return answer_text("User response: ", *answer);
+}
+
+enum class UserStatus : std::uint8_t { active, inactive, pending };
+
+struct Defaults {
+  [[= mcp::description{"User name"}]] std::string name{"John Doe"};
+  [[= mcp::description{"User age"}]] std::int32_t age{30};
+  [[= mcp::description{"User score"}]] double score{95.5};
+  [[= mcp::description{"User status"}]] UserStatus status{UserStatus::active};
+  [[= mcp::description{"Verification status"}]] bool verified{true};
+};
+
+[[= mcp::tool{"Tests elicitation with default values per SEP-1034"}]] std::string
+    test_elicitation_sep1034_defaults(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<mcp::Json>> answer =
+      ask.form("Please review and update the form fields with defaults",
+               mcp::Json{.text = mcp::detail::form_schema<Defaults>()});
+  if (!answer) {
+    return "Elicitation not supported or error: " + answer.error().model_message;
+  }
+  return answer_text("Elicitation completed: ", *answer);
+}
+
+// Titled enumerations are spelled as JSON: Scrydantic writes an enumeration's
+// names, not titles for them.
+constexpr std::string_view enum_form = R"json({"properties":{)json"
+    R"json("legacyEnum":{"description":"Select one option (legacy)","enum":["opt1","opt2","opt3"],)json"
+    R"json("enumNames":["Option One","Option Two","Option Three"],"type":"string"},)json"
+    R"json("titledMulti":{"description":"Select multiple options with titles","items":{"anyOf":[)json"
+    R"json({"const":"value1","title":"First Choice"},{"const":"value2","title":"Second Choice"},)json"
+    R"json({"const":"value3","title":"Third Choice"}]},"maxItems":3,"minItems":1,"type":"array"},)json"
+    R"json("titledSingle":{"description":"Select one option with titles","oneOf":[)json"
+    R"json({"const":"value1","title":"First Option"},{"const":"value2","title":"Second Option"},)json"
+    R"json({"const":"value3","title":"Third Option"}],"type":"string"},)json"
+    R"json("untitledMulti":{"description":"Select multiple options","items":{"enum":)json"
+    R"json(["option1","option2","option3"],"type":"string"},"maxItems":3,"minItems":1,"type":"array"},)json"
+    R"json("untitledSingle":{"description":"Select one option","enum":["option1","option2","option3"],)json"
+    R"json("type":"string"}},"required":[],"type":"object"})json";
+
+[[= mcp::tool{"Tests elicitation with enum schema improvements per SEP-1330"}]] std::string
+    test_elicitation_sep1330_enums(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<mcp::Json>> answer =
+      ask.form("Please select options from the enum fields", mcp::Json{.text = std::string{enum_form}});
+  if (!answer) {
+    return "Elicitation not supported or error: " + answer.error().model_message;
+  }
+  return answer_text("Elicitation completed: ", *answer);
+}
+
+// 2026-07-28: rounds of input_required.
+
+[[= mcp::tool{"Test tool requiring sampling"}]] mcp::Result<std::string>
+    test_missing_capability(mcp::Sampling sampling) {
+  mcp::Result<mcp::SamplingResult> answer = sampling.create(ask_model("Say hi", 10));
+  if (!answer) {
+    return std::unexpected(answer.error());
+  }
+  return std::string{"Success"};
+}
+
+struct Name {
+  std::string name;
+};
+
+[[= mcp::tool{"MRTR: returns InputRequiredResult with elicitation request"}]]
+mcp::Result<std::string> test_input_required_result_elicitation(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("What is your name?", "user_name");
+  if (!name) {
+    return std::unexpected(name.error());
+  }
+  return "Hello, " + (name->content ? name->content->name : std::string{"friend"}) + "!";
+}
+
+[[= mcp::tool{"MRTR: returns InputRequiredResult with sampling request"}]]
+mcp::Result<std::string> test_input_required_result_sampling(mcp::Sampling sampling) {
+  mcp::Result<mcp::SamplingResult> answer =
+      sampling.create(ask_model("What is the capital of France?", 100), "sample_request");
+  if (!answer) {
+    return std::unexpected(answer.error());
+  }
+  return "Sampling result: " + first_text(answer->content);
+}
+
+[[= mcp::tool{"MRTR: returns InputRequiredResult with roots/list request"}]]
+mcp::Result<std::string> test_input_required_result_list_roots(mcp::Roots roots) {
+  mcp::Result<std::vector<mcp::Root>> listed = roots.list("roots_request");
+  if (!listed) {
+    return std::unexpected(listed.error());
+  }
+  return "Found " + std::to_string(listed->size()) + " root(s)";
+}
+
+struct Confirmation {
+  bool ok{};
+};
+
+[[= mcp::tool{"MRTR: returns InputRequiredResult with requestState"}]]
+mcp::Result<std::string> test_input_required_result_request_state(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Confirmation>> confirmed =
+      ask.form<Confirmation>("Please confirm", "confirm");
+  if (!confirmed) {
+    return std::unexpected(confirmed.error());
+  }
+  return std::string{"state-ok: requestState validated"};
+}
+
+[[= mcp::tool{"MRTR: returns InputRequiredResult with multiple input requests"}]]
+mcp::Result<std::string> test_input_required_result_multiple_inputs(mcp::Elicitation ask,
+                                                                    mcp::Sampling sampling,
+                                                                    mcp::Roots roots) {
+  // Every question is asked before any answer is looked at, so that one round
+  // asks them all.
+  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("What is your name?", "user_name");
+  mcp::Result<mcp::SamplingResult> greeting =
+      sampling.create(ask_model("Generate a greeting", 50), "greeting");
+  mcp::Result<std::vector<mcp::Root>> listed = roots.list("client_roots");
+  if (!name) {
+    return std::unexpected(name.error());
+  }
+  if (!greeting) {
+    return std::unexpected(greeting.error());
+  }
+  if (!listed) {
+    return std::unexpected(listed.error());
+  }
+  return "Name: " + (name->content ? name->content->name : std::string{"friend"}) +
+         "; Greeting: " + first_text(greeting->content) +
+         "; Roots: " + std::to_string(listed->size());
+}
+
+struct Color {
+  std::string color;
+};
+
+[[= mcp::tool{"MRTR: multi-round InputRequiredResult workflow"}]]
+mcp::Result<std::string> test_input_required_result_multi_round(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("Step 1: What is your name?", "step1");
+  if (!name) {
+    return std::unexpected(name.error());
+  }
+  mcp::Result<mcp::Answer<Color>> color =
+      ask.form<Color>("Step 2: What is your favorite color?", "step2");
+  if (!color) {
+    return std::unexpected(color.error());
+  }
+  return "Multi-round complete for " +
+         (name->content ? name->content->name : std::string{"friend"}) + " who likes " +
+         (color->content ? color->content->color : std::string{"nothing"});
+}
+
+[[= mcp::tool{"MRTR: verifies the integrity of its requestState"}]]
+mcp::Result<std::string> test_input_required_result_tampered_state(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Confirmation>> confirmed =
+      ask.form<Confirmation>("Please confirm", "confirm");
+  if (!confirmed) {
+    return std::unexpected(confirmed.error());
+  }
+  return std::string{"integrity-ok: state verified"};
+}
+
+struct Value {
+  std::string value;
+};
+
+[[= mcp::tool{"MRTR: requests only the inputs the client's capabilities allow"}]]
+mcp::Result<std::string> test_input_required_result_capabilities(mcp::Elicitation ask,
+                                                                 mcp::Sampling sampling) {
+  std::vector<std::string> received;
+  std::optional<mcp::Error> pending;
+  if (ask) {
+    mcp::Result<mcp::Answer<Value>> value = ask.form<Value>("Elicitation input", "elicit_input");
+    if (value) {
+      received.emplace_back("elicit_input");
+    } else {
+      pending = value.error();
+    }
+  }
+  if (sampling) {
+    mcp::Result<mcp::SamplingResult> sample =
+        sampling.create(ask_model("Sample request", 50), "sample_input");
+    if (sample) {
+      received.emplace_back("sample_input");
+    } else if (!pending) {
+      pending = sample.error();
+    }
+  }
+  if (!ask && !sampling) {
+    return std::string{"No supported capabilities declared"};
+  }
+  if (pending) {
+    return std::unexpected(*pending);
+  }
+  std::string keys;
+  for (const std::string& key : received) {
+    keys += (keys.empty() ? "" : ",") + key;
+  }
+  return "capabilities-ok: received " + keys;
+}
+
+[[= mcp::tool{"Diagnostic tool validating response progress streams"}]] std::string
+    test_streaming_elicitation(mcp::Progress progress) {
+  progress.report(50, 100.0);
+  return "Streaming complete";
+}
+
+struct Context {
+  std::string context;
+};
+
+[[= mcp::prompt{"MRTR: prompt that requires elicitation input"}]]
+mcp::Result<std::string> test_input_required_result_prompt(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Context>> context =
+      ask.form<Context>("What context should the prompt use?", "user_context");
+  if (!context) {
+    return std::unexpected(context.error());
+  }
+  return "Prompt with context: " +
+         (context->content ? context->content->context : std::string{"none"});
 }
 
 [[= mcp::resource{.uri = "test://static-text",

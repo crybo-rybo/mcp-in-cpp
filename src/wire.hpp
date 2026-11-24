@@ -27,6 +27,7 @@ inline constexpr int method_not_found = -32601;
 inline constexpr int invalid_params = -32602;
 inline constexpr int internal_error = -32603;
 inline constexpr int unsupported_protocol_version = -32022;
+inline constexpr int missing_capability = -32021;
 // The code of a resource that is not there, before 2026-07-28.
 inline constexpr int resource_not_found = -32002;
 
