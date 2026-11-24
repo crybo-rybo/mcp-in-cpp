@@ -7,18 +7,18 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
-#include <mcp/ask.hpp>
-#include <mutex>
-#include <random>
 #include <exception>
 #include <initializer_list>
 #include <iostream>
 #include <iterator>
+#include <mcp/ask.hpp>
 #include <mcp/server.hpp>
+#include <mutex>
 #include <optional>
+#include <random>
 #include <scrydantic/scrydantic.hpp>
-#include <string>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -94,7 +94,8 @@ constexpr std::chrono::seconds state_lifetime{600};
 [[nodiscard]] std::string state_binding(const std::string_view method,
                                         const std::string_view target,
                                         const std::string_view arguments) {
-  return base64url(digest_text(crypto::sha256(join({method, "\n", target, "\n", arguments}))));
+  return base64url(
+      digest_text(crypto::sha256(join({method, "\n", target, "\n", arguments}))));
 }
 
 [[nodiscard]] std::int64_t unix_seconds() {
@@ -106,9 +107,10 @@ constexpr std::chrono::seconds state_lifetime{600};
 // The requestState that carries a call's answers to its next round: the
 // answers, what they are bound to, and when they expire, signed with the
 // server's key.
-[[nodiscard]] std::string seal_state(const std::string_view key,
-                                     const std::unordered_map<std::string, std::string>& answers,
-                                     const std::string_view binding) {
+[[nodiscard]] std::string
+seal_state(const std::string_view key,
+           const std::unordered_map<std::string, std::string>& answers,
+           const std::string_view binding) {
   std::string payload{R"({"answers":{)"};
   bool first = true;
   for (const auto& [name, answer] : answers) {
@@ -125,7 +127,8 @@ constexpr std::chrono::seconds state_lifetime{600};
   payload += R"(","expires":)";
   payload += std::to_string(unix_seconds() + state_lifetime.count());
   payload += '}';
-  return base64url(payload) + "." + base64url(digest_text(crypto::hmac_sha256(key, payload)));
+  return base64url(payload) + "." +
+         base64url(digest_text(crypto::hmac_sha256(key, payload)));
 }
 
 // The answers a requestState carries, or nothing when it is not one this
@@ -155,7 +158,8 @@ open_state(const std::string_view key, const std::string_view state,
   const std::optional<JsonView> expires = document->find("expires");
   const std::optional<JsonView> answers = document->find("answers");
   if (!bound.has_value() || bound->string() != binding || !expires.has_value() ||
-      expires->number().value_or(0) < static_cast<double>(unix_seconds()) || !is_object(answers)) {
+      expires->number().value_or(0) < static_cast<double>(unix_seconds()) ||
+      !is_object(answers)) {
     return std::nullopt;
   }
   std::unordered_map<std::string, std::string> found;
@@ -173,15 +177,16 @@ struct ClientAbilities {
   bool roots{};
 };
 
-[[nodiscard]] ClientAbilities abilities_in(const std::optional<JsonView>& capabilities) {
+[[nodiscard]] ClientAbilities
+abilities_in(const std::optional<JsonView>& capabilities) {
   if (!is_object(capabilities)) {
     return {};
   }
   const std::optional<JsonView> elicitation = capabilities->find("elicitation");
   // An elicitation capability without `form` still has it, unless it names
   // only `url`.
-  const bool form = is_object(elicitation) &&
-                    (elicitation->find("form").has_value() || !elicitation->find("url").has_value());
+  const bool form = is_object(elicitation) && (elicitation->find("form").has_value() ||
+                                               !elicitation->find("url").has_value());
   return {.elicitation = form,
           .sampling = capabilities->find("sampling").has_value(),
           .roots = capabilities->find("roots").has_value()};
@@ -192,9 +197,9 @@ constexpr std::size_t most_subscriptions = 1024;
 
 // The resource a URI names: one of that URI, or else the first template it
 // matches, whose variables then go to `variables`.
-[[nodiscard]] const BoundResource* find_resource(const std::span<const BoundResource> resources,
-                                                 const std::string_view uri,
-                                                 std::string* const variables = nullptr) {
+[[nodiscard]] const BoundResource*
+find_resource(const std::span<const BoundResource> resources,
+              const std::string_view uri, std::string* const variables = nullptr) {
   for (const BoundResource& resource : resources) {
     if (!resource.is_template && resource.uri == uri) {
       return &resource;
@@ -343,7 +348,8 @@ struct Logger::State {
 };
 
 bool Logger::wants(const LogLevel level) const noexcept {
-  return state_ != nullptr && (!state_->threshold.has_value() || level >= *state_->threshold);
+  return state_ != nullptr &&
+         (!state_->threshold.has_value() || level >= *state_->threshold);
 }
 
 void Logger::log(const LogLevel level, const std::string_view message) const {
@@ -430,8 +436,9 @@ void Connection::resource_updated(const std::string_view uri) const {
   if (!push_ || !subscriptions_.contains(std::string{uri})) {
     return;
   }
-  push_(notification_message("notifications/resources/updated",
-                             join({R"({"uri":)", scrydantic::escape_json_string(uri), "}"})));
+  push_(notification_message(
+      "notifications/resources/updated",
+      join({R"({"uri":)", scrydantic::escape_json_string(uri), "}"})));
 }
 
 Server& Server::request_state_key(std::string key) {
@@ -500,12 +507,14 @@ Server& Server::add(std::vector<BoundResource> resources) {
     return *this;
   }
   for (BoundResource& resource : resources) {
-    const bool taken = std::ranges::any_of(
-        resources_, [&](const BoundResource& other) { return other.uri == resource.uri; });
+    const bool taken = std::ranges::any_of(resources_, [&](const BoundResource& other) {
+      return other.uri == resource.uri;
+    });
     if (taken || !resource.read) {
       problem_ = scrydantic::Error{};
-      problem_->message = taken ? join({"two resources have the URI \"", resource.uri, "\""})
-                                : join({"resource \"", resource.uri, "\" has no handler"});
+      problem_->message =
+          taken ? join({"two resources have the URI \"", resource.uri, "\""})
+                : join({"resource \"", resource.uri, "\" has no handler"});
       return *this;
     }
     resources_.push_back(std::move(resource));
@@ -519,8 +528,8 @@ Server& Server::add(std::vector<BoundPrompt> prompts) {
     return *this;
   }
   for (BoundPrompt& prompt : prompts) {
-    const bool taken = std::ranges::find(prompts_, prompt.name, &BoundPrompt::name) !=
-                       prompts_.end();
+    const bool taken =
+        std::ranges::find(prompts_, prompt.name, &BoundPrompt::name) != prompts_.end();
     if (taken || !prompt.get) {
       problem_ = scrydantic::Error{};
       problem_->message = taken ? join({"two prompts are named \"", prompt.name, "\""})
@@ -869,7 +878,8 @@ std::optional<std::string> Connection::dispatch(Request& request,
   if (request.method == "logging/setLevel" && server_->logs_) {
     return set_log_level(request);
   }
-  if ((request.method == "resources/subscribe" || request.method == "resources/unsubscribe") &&
+  if ((request.method == "resources/subscribe" ||
+       request.method == "resources/unsubscribe") &&
       !server_->resources_.empty()) {
     return subscribe(request, request.method == "resources/subscribe");
   }
@@ -903,8 +913,9 @@ std::string Connection::subscribe(const Request& request, const bool subscribing
   if (!subscribing) {
     subscriptions_.erase(std::string{*uri});
   } else if (subscriptions_.size() >= most_subscriptions) {
-    return request.error(wire::invalid_params,
-                         "Invalid params: a session subscribes to at most 1024 resources");
+    return request.error(
+        wire::invalid_params,
+        "Invalid params: a session subscribes to at most 1024 resources");
   } else {
     subscriptions_.emplace(*uri);
   }
@@ -916,8 +927,9 @@ std::string Connection::set_log_level(const Request& request) {
   const std::optional<LogLevel> parsed =
       level.has_value() ? level->string().and_then(log_level_named) : std::nullopt;
   if (!parsed.has_value()) {
-    return request.error(wire::invalid_params,
-                         "Invalid params: level must name a log level, such as \"info\"");
+    return request.error(
+        wire::invalid_params,
+        "Invalid params: level must name a log level, such as \"info\"");
   }
   log_level_.store(static_cast<int>(*parsed), std::memory_order_release);
   return request.result("{}");
@@ -978,7 +990,8 @@ std::string Connection::initialize(const Request& request) {
     return request.internal_error();
   }
   const ClientAbilities abilities = abilities_in(request.param("capabilities"));
-  legacy_abilities_.store((abilities.elicitation ? 1U : 0U) | (abilities.sampling ? 2U : 0U) |
+  legacy_abilities_.store((abilities.elicitation ? 1U : 0U) |
+                              (abilities.sampling ? 2U : 0U) |
                               (abilities.roots ? 4U : 0U),
                           std::memory_order_release);
   legacy_version_.store(
@@ -1067,8 +1080,8 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
   // A text block that is not UTF-8 is the tool's own fault, and a failure.
   bool written = true;
   const auto say = [&reply, &written](const std::string_view text) {
-    std::optional<std::string> blocks =
-        encoded(std::vector<wire::TextContent>{{.text = std::string{text}, .type = "text"}});
+    std::optional<std::string> blocks = encoded(
+        std::vector<wire::TextContent>{{.text = std::string{text}, .type = "text"}});
     written = blocks.has_value();
     reply.content = Json{.text = blocks.has_value() ? std::move(*blocks) : "[]"};
   };
@@ -1154,10 +1167,10 @@ Context Connection::context_of(const Request& request, Call& call,
   return context;
 }
 
-std::optional<std::string> Connection::prepare_inquiry(const Request& request, Call& call,
-                                                       const Notify& notify,
-                                                       const std::string_view target,
-                                                       const std::string_view arguments) const {
+std::optional<std::string>
+Connection::prepare_inquiry(const Request& request, Call& call, const Notify& notify,
+                            const std::string_view target,
+                            const std::string_view arguments) const {
   detail::Inquiry& inquiry = call.inquiry;
   inquiry.modern = request.modern;
   if (!request.modern) {
@@ -1166,8 +1179,9 @@ std::optional<std::string> Connection::prepare_inquiry(const Request& request, C
     inquiry.sampling = (abilities & 2U) != 0;
     inquiry.roots = (abilities & 4U) != 0;
     inquiry.form_mode = legacy_version() != "2025-06-18";
-    inquiry.round_trip = [this, &notify, stop = request.stop](const std::string_view method,
-                                                             const std::string_view params) {
+    inquiry.round_trip = [this, &notify,
+                          stop = request.stop](const std::string_view method,
+                                               const std::string_view params) {
       return ask_client(method, params, notify, stop);
     };
     return std::nullopt;
@@ -1181,10 +1195,9 @@ std::optional<std::string> Connection::prepare_inquiry(const Request& request, C
   if (const std::optional<JsonView> state = request.param("requestState")) {
     const std::optional<std::string_view> text = state->string();
     std::optional<std::unordered_map<std::string, std::string>> answers =
-        text.has_value()
-            ? open_state(server_->state_key_, *text,
-                         state_binding(request.method, target, arguments))
-            : std::nullopt;
+        text.has_value() ? open_state(server_->state_key_, *text,
+                                      state_binding(request.method, target, arguments))
+                         : std::nullopt;
     if (!answers.has_value()) {
       return request.error(wire::invalid_params, "Invalid or expired requestState",
                            R"({"reason":"invalid_request_state"})");
@@ -1206,9 +1219,10 @@ std::optional<std::string> Connection::prepare_inquiry(const Request& request, C
   return std::nullopt;
 }
 
-std::optional<std::string> Connection::inquiry_outcome(const Request& request, Call& call,
-                                                       const std::string_view target,
-                                                       const std::string_view arguments) const {
+std::optional<std::string>
+Connection::inquiry_outcome(const Request& request, Call& call,
+                            const std::string_view target,
+                            const std::string_view arguments) const {
   detail::Inquiry& inquiry = call.inquiry;
   const std::scoped_lock lock{inquiry.mutex};
   if (inquiry.missing.has_value()) {
@@ -1216,7 +1230,8 @@ std::optional<std::string> Connection::inquiry_outcome(const Request& request, C
                          join({R"({"requiredCapabilities":)", *inquiry.missing, "}"}));
   }
   if (inquiry.invalid.has_value()) {
-    return request.error(wire::invalid_params, join({"Invalid params: ", *inquiry.invalid}));
+    return request.error(wire::invalid_params,
+                         join({"Invalid params: ", *inquiry.invalid}));
   }
   if (!request.modern || inquiry.unanswered.empty()) {
     return std::nullopt;
@@ -1249,10 +1264,12 @@ std::optional<std::string> Connection::inquiry_outcome(const Request& request, C
 }
 
 Result<std::string> Connection::ask_client(const std::string_view method,
-                                           const std::string_view params, const Notify& notify,
+                                           const std::string_view params,
+                                           const Notify& notify,
                                            const std::stop_token& stop) const {
   if (!notify || gone_.stop_requested()) {
-    return std::unexpected(scrydantic::tool_error("the client cannot be reached from this call"));
+    return std::unexpected(
+        scrydantic::tool_error("the client cannot be reached from this call"));
   }
   const std::string id =
       std::to_string(next_request_id_.fetch_add(1, std::memory_order_relaxed) + 1);
@@ -1269,7 +1286,8 @@ Result<std::string> Connection::ask_client(const std::string_view method,
     // client is gone.
     std::stop_source either;
     const std::stop_callback cancelled{stop, [&either] { either.request_stop(); }};
-    const std::stop_callback left{gone_.get_token(), [&either] { either.request_stop(); }};
+    const std::stop_callback left{gone_.get_token(),
+                                  [&either] { either.request_stop(); }};
     std::unique_lock lock{waiting->mutex};
     waiting->done.wait(lock, either.get_token(),
                        [&] { return waiting->response.has_value(); });
@@ -1290,7 +1308,8 @@ Result<std::string> Connection::ask_client(const std::string_view method,
     return result->to_json().text;
   }
   const std::optional<JsonView> error = document->find("error");
-  const std::optional<JsonView> text = error.has_value() ? error->find("message") : std::nullopt;
+  const std::optional<JsonView> text =
+      error.has_value() ? error->find("message") : std::nullopt;
   return std::unexpected(scrydantic::tool_error(
       join({"the client answered with an error: ",
             text.has_value() ? text->string().value_or("") : std::string_view{}})));
@@ -1318,7 +1337,8 @@ void Connection::answered(const std::string& id, const JsonView& response) const
   waiting->done.notify_all();
 }
 
-std::string Connection::list_resources(const Request& request, const bool templates) const {
+std::string Connection::list_resources(const Request& request,
+                                       const bool templates) const {
   if (request.param("cursor").has_value()) {
     return request.error(wire::invalid_params, "Invalid params: unknown cursor");
   }
@@ -1350,7 +1370,8 @@ std::string Connection::list_resources(const Request& request, const bool templa
   return result.has_value() ? request.result(*result) : request.internal_error();
 }
 
-std::string Connection::read_resource(const Request& request, const Notify& notify) const {
+std::string Connection::read_resource(const Request& request,
+                                      const Notify& notify) const {
   const std::optional<JsonView> uri_value = request.param("uri");
   const std::optional<std::string_view> uri =
       uri_value.has_value() ? uri_value->string() : std::nullopt;
@@ -1362,12 +1383,14 @@ std::string Connection::read_resource(const Request& request, const Notify& noti
   const auto not_found = [&](const std::string_view message) {
     const std::optional<std::string> data =
         encoded(wire::ResourceNotFoundData{.uri = std::string{*uri}});
-    return request.error(request.modern ? wire::invalid_params : wire::resource_not_found,
+    return request.error(request.modern ? wire::invalid_params
+                                        : wire::resource_not_found,
                          message, data.value_or(std::string{}));
   };
 
   std::string variables{"{}"};
-  const BoundResource* const found = find_resource(server_->resources_, *uri, &variables);
+  const BoundResource* const found =
+      find_resource(server_->resources_, *uri, &variables);
   if (found == nullptr) {
     return not_found("Resource not found");
   }
@@ -1377,7 +1400,8 @@ std::string Connection::read_resource(const Request& request, const Notify& noti
     return request.internal_error();
   }
   Call call{};
-  if (std::optional<std::string> refused = prepare_inquiry(request, call, notify, *uri, "{}")) {
+  if (std::optional<std::string> refused =
+          prepare_inquiry(request, call, notify, *uri, "{}")) {
     return std::move(*refused);
   }
   const Context context = context_of(request, call, notify);
@@ -1399,7 +1423,8 @@ std::string Connection::read_resource(const Request& request, const Notify& noti
       // The variables do not fit the parameters, or the function refused.
       return not_found(contents.error().model_message);
     }
-    server_->log_line(join({"resource ", found->uri, " failed: ", contents.error().message}));
+    server_->log_line(
+        join({"resource ", found->uri, " failed: ", contents.error().message}));
     return request.internal_error();
   }
 
@@ -1487,7 +1512,8 @@ std::string Connection::get_prompt(const Request& request, const Notify& notify)
       return request.error(wire::invalid_params,
                            join({"Invalid params: ", messages.error().model_message}));
     }
-    server_->log_line(join({"prompt ", found->name, " failed: ", messages.error().message}));
+    server_->log_line(
+        join({"prompt ", found->name, " failed: ", messages.error().message}));
     return request.internal_error();
   }
 
@@ -1512,18 +1538,22 @@ std::string Connection::get_prompt(const Request& request, const Notify& notify)
 
 std::string Connection::complete(const Request& request) const {
   const std::optional<JsonView> ref = request.param("ref");
-  const std::optional<JsonView> kind = is_object(ref) ? ref->find("type") : std::nullopt;
-  const std::optional<std::string_view> type = kind.has_value() ? kind->string() : std::nullopt;
+  const std::optional<JsonView> kind =
+      is_object(ref) ? ref->find("type") : std::nullopt;
+  const std::optional<std::string_view> type =
+      kind.has_value() ? kind->string() : std::nullopt;
   bool known = false;
   if (type == "ref/prompt") {
     const std::optional<JsonView> name = ref->find("name");
-    const std::optional<std::string_view> text = name.has_value() ? name->string() : std::nullopt;
+    const std::optional<std::string_view> text =
+        name.has_value() ? name->string() : std::nullopt;
     known = text.has_value() &&
             std::ranges::find(server_->prompts_, *text, &BoundPrompt::name) !=
                 server_->prompts_.end();
   } else if (type == "ref/resource") {
     const std::optional<JsonView> uri = ref->find("uri");
-    const std::optional<std::string_view> text = uri.has_value() ? uri->string() : std::nullopt;
+    const std::optional<std::string_view> text =
+        uri.has_value() ? uri->string() : std::nullopt;
     known = text.has_value() && std::ranges::any_of(server_->resources_,
                                                     [&](const BoundResource& resource) {
                                                       return resource.uri == *text;
@@ -1533,13 +1563,15 @@ std::string Connection::complete(const Request& request) const {
                          "Invalid params: ref must be a ref/prompt or a ref/resource");
   }
   if (!known) {
-    return request.error(wire::invalid_params,
-                         "Invalid params: ref names no prompt or resource of this server");
+    return request.error(
+        wire::invalid_params,
+        "Invalid params: ref names no prompt or resource of this server");
   }
   // The server suggests no values of its own.
-  wire::CompleteResult reply{.meta = std::nullopt,
-                             .result_type = std::nullopt,
-                             .completion = {.values = {}, .total = 0, .has_more = false}};
+  wire::CompleteResult reply{
+      .meta = std::nullopt,
+      .result_type = std::nullopt,
+      .completion = {.values = {}, .total = 0, .has_more = false}};
   if (request.modern) {
     reply.meta = server_->result_meta();
     reply.result_type = "complete";

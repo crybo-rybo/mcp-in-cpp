@@ -88,7 +88,8 @@ namespace {
       point = (point << 6U) | (byte & 0x3FU);
     }
     constexpr std::uint32_t least[] = {0, 0, 0x80, 0x800, 0x10000};
-    if (point < least[length] || point > 0x10FFFF || (point >= 0xD800 && point <= 0xDFFF)) {
+    if (point < least[length] || point > 0x10FFFF ||
+        (point >= 0xD800 && point <= 0xDFFF)) {
       return false;
     }
     at += length;
@@ -100,9 +101,9 @@ using Variables = std::vector<std::pair<std::string_view, std::string>>;
 
 // Matches the rest of a template, from `pattern`, against the rest of a URI,
 // from `at`. A variable takes the longest text that lets the rest match.
-[[nodiscard]] bool match_from(const std::string_view uri_template, const std::size_t pattern,
-                              const std::string_view uri, const std::size_t at,
-                              Variables& variables) {
+[[nodiscard]] bool match_from(const std::string_view uri_template,
+                              const std::size_t pattern, const std::string_view uri,
+                              const std::size_t at, Variables& variables) {
   if (pattern == uri_template.size()) {
     return at == uri.size();
   }
@@ -123,7 +124,8 @@ using Variables = std::vector<std::pair<std::string_view, std::string>>;
       continue;
     }
     std::optional<std::string> decoded =
-        reserved ? std::optional<std::string>{std::string{value}} : percent_decoded(value);
+        reserved ? std::optional<std::string>{std::string{value}}
+                 : percent_decoded(value);
     if (!decoded.has_value() || !is_utf8(*decoded)) {
       continue;
     }
@@ -162,7 +164,8 @@ std::optional<std::string> match_uri_template(const std::string_view uri_templat
 namespace detail {
 
 std::vector<ResourceContents> contents_from(const std::string_view uri,
-                                            const std::string_view mime_type, std::string text) {
+                                            const std::string_view mime_type,
+                                            std::string text) {
   return {text_resource(std::string{uri}, std::move(text),
                         std::string{mime_type.empty() ? "text/plain" : mime_type})};
 }
@@ -170,8 +173,9 @@ std::vector<ResourceContents> contents_from(const std::string_view uri,
 std::vector<ResourceContents> contents_from(const std::string_view uri,
                                             const std::string_view mime_type,
                                             const std::vector<std::byte>& bytes) {
-  return {blob_resource(std::string{uri}, bytes,
-                        std::string{mime_type.empty() ? "application/octet-stream" : mime_type})};
+  return {blob_resource(
+      std::string{uri}, bytes,
+      std::string{mime_type.empty() ? "application/octet-stream" : mime_type})};
 }
 
 std::vector<ResourceContents> contents_from(const std::string_view uri,

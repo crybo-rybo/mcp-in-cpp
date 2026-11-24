@@ -20,14 +20,14 @@
 #include <memory>
 #include <meta>
 #include <mutex>
-#include <unordered_map>
-#include <unordered_set>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -68,11 +68,12 @@ consteval bool has_tools(const std::meta::info entity) {
   if (std::meta::is_namespace(entity)) {
     return !scrydantic::annotated_functions_of(entity, ^^scrydantic::tool).empty();
   }
-  return std::ranges::any_of(std::meta::annotations_of(entity), [](const std::meta::info note) {
-    const std::meta::info type = std::meta::type_of(note);
-    return std::meta::has_template_arguments(type) &&
-           std::meta::template_of(type) == ^^scrydantic::tool;
-  });
+  return std::ranges::any_of(
+      std::meta::annotations_of(entity), [](const std::meta::info note) {
+        const std::meta::info type = std::meta::type_of(note);
+        return std::meta::has_template_arguments(type) &&
+               std::meta::template_of(type) == ^^scrydantic::tool;
+      });
 }
 
 // Whether any function that add<Entity>() binds takes an mcp::Logger.
@@ -80,7 +81,8 @@ consteval bool takes_logger(const std::meta::info entity) {
   std::vector<std::meta::info> functions;
   if (std::meta::is_namespace(entity) ||
       (std::meta::is_type(entity) && std::meta::is_class_type(entity))) {
-    for (const std::meta::info annotation : {^^scrydantic::tool, ^^resource, ^^prompt}) {
+    for (const std::meta::info annotation :
+         {^^scrydantic::tool, ^^resource, ^^prompt}) {
       for (const std::meta::info function :
            scrydantic::annotated_functions_of(entity, annotation)) {
         functions.push_back(function);
@@ -90,9 +92,11 @@ consteval bool takes_logger(const std::meta::info entity) {
     functions.push_back(entity);
   }
   return std::ranges::any_of(functions, [](const std::meta::info function) {
-    return std::ranges::any_of(std::meta::parameters_of(function), [](const std::meta::info p) {
-      return std::meta::dealias(std::meta::remove_cvref(std::meta::type_of(p))) == ^^Logger;
-    });
+    return std::ranges::any_of(
+        std::meta::parameters_of(function), [](const std::meta::info p) {
+          return std::meta::dealias(std::meta::remove_cvref(std::meta::type_of(p))) ==
+                 ^^Logger;
+        });
   });
 }
 
@@ -153,10 +157,10 @@ public:
   /// @tparam Entity Reflection of a namespace or of a function.
   /// @tparam Tools, Resources, Prompts Leave defaulted: the functions as the
   /// calling translation unit sees them.
-  template <std::meta::info Entity,
-            typename Tools = typename[:scrydantic::tools_of(Entity, ^^Context):],
-            typename Resources = typename[:detail::entries_of(Entity, ^^resource):],
-            typename Prompts = typename[:detail::entries_of(Entity, ^^prompt):]>
+  template <std::meta::info Entity, typename Tools = typename
+            [:scrydantic::tools_of(Entity, ^^Context):], typename Resources = typename
+            [:detail::entries_of(Entity, ^^resource):], typename Prompts = typename
+            [:detail::entries_of(Entity, ^^prompt):]>
   Server& add() {
     logs_ = logs_ || detail::takes_logger(Entity);
     if constexpr (detail::has_tools(Entity)) {
@@ -179,7 +183,8 @@ public:
     logs_ = logs_ || detail::takes_logger(^^Toolbox);
     static constexpr std::span<const bool> content =
         std::define_static_array(detail::content_results(^^Toolbox));
-    return add_bound(scrydantic::bind<Context, Toolbox, Tools>(std::move(toolbox)), content);
+    return add_bound(scrydantic::bind<Context, Toolbox, Tools>(std::move(toolbox)),
+                     content);
   }
 
   /// Adds tools that are already bound, such as one built by hand around
@@ -222,7 +227,9 @@ public:
   }
 
   /// The prompts added so far, in order.
-  [[nodiscard]] std::span<const BoundPrompt> prompts() const noexcept { return prompts_; }
+  [[nodiscard]] std::span<const BoundPrompt> prompts() const noexcept {
+    return prompts_;
+  }
 
 private:
   friend class Connection;
@@ -344,11 +351,13 @@ private:
   // for another method.
   [[nodiscard]] std::optional<std::string> serve_feature(const Request& request,
                                                          const Notify& notify) const;
-  [[nodiscard]] std::string list_resources(const Request& request, bool templates) const;
+  [[nodiscard]] std::string list_resources(const Request& request,
+                                           bool templates) const;
   [[nodiscard]] std::string read_resource(const Request& request,
                                           const Notify& notify) const;
   [[nodiscard]] std::string list_prompts(const Request& request) const;
-  [[nodiscard]] std::string get_prompt(const Request& request, const Notify& notify) const;
+  [[nodiscard]] std::string get_prompt(const Request& request,
+                                       const Notify& notify) const;
   [[nodiscard]] std::string complete(const Request& request) const;
   // The context of a call of this request, which reports progress to `notify`.
   // What a call keeps while it runs: the state of its progress and its log.
@@ -361,19 +370,19 @@ private:
   // answers the request brings, and returns the error for a requestState that
   // is not the server's. `target` and `arguments` are what the state is bound
   // to: the name or URI the request names, and its arguments.
-  [[nodiscard]] std::optional<std::string> prepare_inquiry(const Request& request, Call& call,
-                                                         const Notify& notify,
-                                                         std::string_view target,
-                                                         std::string_view arguments) const;
+  [[nodiscard]] std::optional<std::string>
+  prepare_inquiry(const Request& request, Call& call, const Notify& notify,
+                  std::string_view target, std::string_view arguments) const;
   // The response for a call that asked what it could not, or that still has
   // questions for the client, or nothing for one that is done.
-  [[nodiscard]] std::optional<std::string> inquiry_outcome(const Request& request, Call& call,
-                                                         std::string_view target,
-                                                         std::string_view arguments) const;
+  [[nodiscard]] std::optional<std::string>
+  inquiry_outcome(const Request& request, Call& call, std::string_view target,
+                  std::string_view arguments) const;
   // Sends a request to the client on the call's stream and waits for the
   // response, as a handshake session asks.
   [[nodiscard]] Result<std::string> ask_client(std::string_view method,
-                                               std::string_view params, const Notify& notify,
+                                               std::string_view params,
+                                               const Notify& notify,
                                                const std::stop_token& stop) const;
   // Hands the client's response to the call that waits for it.
   void answered(const std::string& id, const scrydantic::JsonView& response) const;

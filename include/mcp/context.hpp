@@ -134,7 +134,9 @@ public:
   void debug(const std::string_view message) const { log(LogLevel::debug, message); }
   void info(const std::string_view message) const { log(LogLevel::info, message); }
   void notice(const std::string_view message) const { log(LogLevel::notice, message); }
-  void warning(const std::string_view message) const { log(LogLevel::warning, message); }
+  void warning(const std::string_view message) const {
+    log(LogLevel::warning, message);
+  }
   void error(const std::string_view message) const { log(LogLevel::error, message); }
 
 private:
@@ -168,7 +170,6 @@ struct Context {
 
 } // namespace mcp
 
-
 /// Lets a tool take a std::stop_token parameter in any position: Context::stop.
 template <> struct scrydantic::supplier<std::stop_token, mcp::Context> {
   static std::stop_token supply(const mcp::Context& context) noexcept {
@@ -178,7 +179,9 @@ template <> struct scrydantic::supplier<std::stop_token, mcp::Context> {
 
 /// Lets a function take an mcp::Logger parameter in any position.
 template <> struct scrydantic::supplier<mcp::Logger, mcp::Context> {
-  static mcp::Logger supply(const mcp::Context& context) noexcept { return context.logger; }
+  static mcp::Logger supply(const mcp::Context& context) noexcept {
+    return context.logger;
+  }
 };
 
 /// Lets a tool take an mcp::Progress parameter in any position.

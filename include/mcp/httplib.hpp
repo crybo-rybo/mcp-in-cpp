@@ -62,7 +62,8 @@ public:
 
   // Waits for the status and the headers, then copies them to `response`.
   // Returns whether the body is a stream.
-  bool wait_for_start(httplib::Response& response, const std::function<bool()>& closed) {
+  bool wait_for_start(httplib::Response& response,
+                      const std::function<bool()>& closed) {
     std::unique_lock lock{mutex_};
     wait(lock, closed, [this] { return started_; });
     response.status = status_ == 0 ? 500 : status_;
@@ -165,12 +166,13 @@ inline void serve_with_httplib(HttpEndpoint& endpoint, const httplib::Request& r
   for (const auto& [name, value] : request.headers) {
     headers.push_back({.name = name, .value = value});
   }
-  reply->worker = std::jthread{[&endpoint, reply = reply.get(), headers = std::move(headers),
-                                method = request.method, body = request.body] {
-    const HttpRequest incoming{.method = method, .headers = headers, .body = body};
-    endpoint.handle(incoming, *reply, reply->stop_token());
-    reply->finish();
-  }};
+  reply->worker =
+      std::jthread{[&endpoint, reply = reply.get(), headers = std::move(headers),
+                    method = request.method, body = request.body] {
+        const HttpRequest incoming{.method = method, .headers = headers, .body = body};
+        endpoint.handle(incoming, *reply, reply->stop_token());
+        reply->finish();
+      }};
   const std::function<bool()> closed = request.is_connection_closed;
   if (!reply->wait_for_start(response, closed)) {
     const std::string body = reply->wait_for_body(closed);
@@ -201,7 +203,8 @@ inline void serve_with_httplib(HttpEndpoint& endpoint, const httplib::Request& r
 /// Each request's endpoint work runs on a thread of its own, so a stream can be
 /// sent while it is written. A client that closes its connection, which under
 /// 2026-07-28 cancels the call, is noticed within a tenth of a second.
-inline void mount(httplib::Server& server, const std::string& path, HttpEndpoint& endpoint) {
+inline void mount(httplib::Server& server, const std::string& path,
+                  HttpEndpoint& endpoint) {
   const auto handler = [&endpoint](const httplib::Request& request,
                                    httplib::Response& response) {
     detail::serve_with_httplib(endpoint, request, response);

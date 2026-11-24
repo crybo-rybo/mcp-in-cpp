@@ -17,14 +17,15 @@
 namespace mcp {
 
 /// Text for the model.
-struct [[ = scrydantic::tag{"text"}, = scrydantic::ignore_unknown ]] TextContent {
+struct[[ = scrydantic::tag{"text"}, = scrydantic::ignore_unknown ]] TextContent {
   std::string text;
 };
 
 /// An image, as base64 of its bytes. image() makes one from the bytes.
-struct [[ = scrydantic::tag{"image"}, = scrydantic::rename_all{scrydantic::camel_case},
-          = scrydantic::ignore_unknown ]]
-ImageContent {
+struct[[
+  = scrydantic::tag{"image"}, = scrydantic::rename_all{scrydantic::camel_case},
+  = scrydantic::ignore_unknown
+]] ImageContent {
   /// The image's bytes in base64.
   std::string data;
   /// Such as `image/png`.
@@ -32,9 +33,10 @@ ImageContent {
 };
 
 /// A sound, as base64 of its bytes. audio() makes one from the bytes.
-struct [[ = scrydantic::tag{"audio"}, = scrydantic::rename_all{scrydantic::camel_case},
-          = scrydantic::ignore_unknown ]]
-AudioContent {
+struct[[
+  = scrydantic::tag{"audio"}, = scrydantic::rename_all{scrydantic::camel_case},
+  = scrydantic::ignore_unknown
+]] AudioContent {
   /// The sound's bytes in base64.
   std::string data;
   /// Such as `audio/wav`.
@@ -43,9 +45,10 @@ AudioContent {
 
 /// What a resource holds: text, or bytes in base64 as `blob`. Exactly one of
 /// the two is set.
-struct [[ = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null,
-          = scrydantic::ignore_unknown ]]
-ResourceContents {
+struct[[
+  = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null,
+  = scrydantic::ignore_unknown
+]] ResourceContents {
   /// The resource's URI.
   std::string uri;
   /// Such as `text/plain` or `image/png`.
@@ -57,15 +60,16 @@ ResourceContents {
 };
 
 /// A resource whose contents come with the result.
-struct [[ = scrydantic::tag{"resource"}, = scrydantic::ignore_unknown ]] EmbeddedResource {
+struct[[ = scrydantic::tag{"resource"}, = scrydantic::ignore_unknown ]]
+    EmbeddedResource {
   ResourceContents resource;
 };
 
 /// A resource that the client can read for itself.
-struct [[ = scrydantic::tag{"resource_link"},
-          = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null,
-          = scrydantic::ignore_unknown ]]
-ResourceLink {
+struct[[
+  = scrydantic::tag{"resource_link"}, = scrydantic::rename_all{scrydantic::camel_case},
+  = scrydantic::skip_null, = scrydantic::ignore_unknown
+]] ResourceLink {
   std::string uri;
   std::string name;
   std::optional<std::string> title{};
@@ -76,8 +80,8 @@ ResourceLink {
 };
 
 /// One block of content.
-using ContentBlock =
-    std::variant<TextContent, ImageContent, AudioContent, ResourceLink, EmbeddedResource>;
+using ContentBlock = std::variant<TextContent, ImageContent, AudioContent, ResourceLink,
+                                  EmbeddedResource>;
 
 /// What a tool returns when its result is content for the model rather than a
 /// value: text, images, sounds, and resources, in order.
@@ -94,18 +98,19 @@ using Content = std::vector<ContentBlock>;
 [[nodiscard]] std::string base64(std::string_view bytes);
 
 /// An image block from the image's bytes.
-[[nodiscard]] ImageContent image(std::span<const std::byte> bytes, std::string mime_type);
+[[nodiscard]] ImageContent image(std::span<const std::byte> bytes,
+                                 std::string mime_type);
 
 /// A sound block from the sound's bytes.
-[[nodiscard]] AudioContent audio(std::span<const std::byte> bytes, std::string mime_type);
+[[nodiscard]] AudioContent audio(std::span<const std::byte> bytes,
+                                 std::string mime_type);
 
 /// A resource's text.
 [[nodiscard]] ResourceContents text_resource(std::string uri, std::string text,
                                              std::string mime_type = "text/plain");
 
 /// A resource's bytes.
-[[nodiscard]] ResourceContents blob_resource(std::string uri,
-                                             std::span<const std::byte> bytes,
-                                             std::string mime_type);
+[[nodiscard]] ResourceContents
+blob_resource(std::string uri, std::span<const std::byte> bytes, std::string mime_type);
 
 } // namespace mcp

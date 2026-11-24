@@ -4,9 +4,9 @@
 #include <array>
 #include <chrono>
 #include <condition_variable>
-#include <deque>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <mcp/http.hpp>
 #include <mcp/server.hpp>
 #include <memory>
@@ -51,10 +51,10 @@ constexpr int request_cancelled = -32800;
   return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
 }
 
-[[nodiscard]] bool iequals(const std::string_view a, const std::string_view b) noexcept {
-  return std::ranges::equal(a, b, [](const char x, const char y) {
-    return lower(x) == lower(y);
-  });
+[[nodiscard]] bool iequals(const std::string_view a,
+                           const std::string_view b) noexcept {
+  return std::ranges::equal(
+      a, b, [](const char x, const char y) { return lower(x) == lower(y); });
 }
 
 [[nodiscard]] bool istarts_with(const std::string_view text,
@@ -84,7 +84,8 @@ constexpr int request_cancelled = -32800;
   while (!rest.empty()) {
     const std::size_t comma = rest.find(',');
     std::string_view item = rest.substr(0, comma);
-    rest = comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
+    rest =
+        comma == std::string_view::npos ? std::string_view{} : rest.substr(comma + 1);
     item = trim(item.substr(0, item.find(';')));
     if (iequals(item, type) || item == "*/*" ||
         (item.size() == major.size() + 2 && istarts_with(item, major) &&
@@ -115,8 +116,8 @@ constexpr int request_cancelled = -32800;
 
 [[nodiscard]] bool listed(const std::vector<std::string>& list,
                           const std::string_view value) {
-  return std::ranges::any_of(list,
-                             [value](const std::string& item) { return iequals(item, value); });
+  return std::ranges::any_of(
+      list, [value](const std::string& item) { return iequals(item, value); });
 }
 
 [[nodiscard]] std::optional<std::string> base64_decode(const std::string_view text) {
@@ -223,7 +224,8 @@ constexpr int request_cancelled = -32800;
 }
 
 const HttpHeader json_type{.name = "Content-Type", .value = "application/json"};
-const HttpHeader text_type{.name = "Content-Type", .value = "text/plain; charset=utf-8"};
+const HttpHeader text_type{.name = "Content-Type",
+                           .value = "text/plain; charset=utf-8"};
 
 // Writes the response to one request: a JSON body, or an event stream from the
 // first notification on.
@@ -375,8 +377,10 @@ std::optional<std::string_view> HttpRequest::header(const std::string_view name)
 }
 
 std::size_t HttpRequest::header_count(const std::string_view name) const {
-  return static_cast<std::size_t>(std::ranges::count_if(
-      headers, [name](const HttpHeader& header) { return iequals(header.name, name); }));
+  return static_cast<std::size_t>(
+      std::ranges::count_if(headers, [name](const HttpHeader& header) {
+        return iequals(header.name, name);
+      }));
 }
 
 struct HttpEndpoint::State {
@@ -435,8 +439,8 @@ struct HttpEndpoint::State {
     });
     const std::size_t most = std::max<std::size_t>(options.max_sessions, 1);
     while (sessions.size() >= most) {
-      const auto oldest =
-          std::ranges::min_element(sessions, {}, [](const auto& entry) { return entry.second.used; });
+      const auto oldest = std::ranges::min_element(
+          sessions, {}, [](const auto& entry) { return entry.second.used; });
       if (oldest == sessions.end()) {
         break;
       }
@@ -464,13 +468,15 @@ struct HttpEndpoint::State {
     return true;
   }
 
-  void serve_legacy(const HttpRequest& request, HttpResponse& out, const JsonView& message,
-                    const std::string& id, std::string_view method);
-  void stream_session(const HttpRequest& request, HttpResponse& out, const std::string& id,
-                      std::stop_token stop);
-  void serve_modern(const HttpRequest& request, HttpResponse& out, const JsonView& message,
-                    const std::string& id, std::string_view method,
-                    std::string_view version, std::stop_token stop);
+  void serve_legacy(const HttpRequest& request, HttpResponse& out,
+                    const JsonView& message, const std::string& id,
+                    std::string_view method);
+  void stream_session(const HttpRequest& request, HttpResponse& out,
+                      const std::string& id, std::stop_token stop);
+  void serve_modern(const HttpRequest& request, HttpResponse& out,
+                    const JsonView& message, const std::string& id,
+                    std::string_view method, std::string_view version,
+                    std::stop_token stop);
 };
 
 HttpEndpoint::HttpEndpoint(const Server& server, HttpOptions options)
@@ -485,7 +491,8 @@ void HttpEndpoint::handle(const HttpRequest& request, HttpResponse& out,
 
   if (!options.allowed_hosts.empty()) {
     const std::optional<std::string_view> host = request.header("Host");
-    if (!host.has_value() || !listed(options.allowed_hosts, without_port(trim(*host)))) {
+    if (!host.has_value() ||
+        !listed(options.allowed_hosts, without_port(trim(*host)))) {
       send_plain(out, 421, "Invalid Host header");
       return;
     }
@@ -500,7 +507,8 @@ void HttpEndpoint::handle(const HttpRequest& request, HttpResponse& out,
     }
   }
 
-  const std::optional<std::string_view> session_header = request.header("Mcp-Session-Id");
+  const std::optional<std::string_view> session_header =
+      request.header("Mcp-Session-Id");
   if (iequals(request.method, "DELETE") && session_header.has_value()) {
     if (state.end(std::string{*session_header})) {
       send_empty(out, 204);
@@ -530,7 +538,8 @@ void HttpEndpoint::handle(const HttpRequest& request, HttpResponse& out,
   const scrydantic::Result<JsonView> document = JsonView::parse(request.body);
   if (!document) {
     send_json(out, 400,
-              error_message({}, parse_error, join({"Parse error: ", document.error().message})));
+              error_message({}, parse_error,
+                            join({"Parse error: ", document.error().message})));
     return;
   }
   if (document->kind() != JsonKind::object) {
@@ -542,7 +551,8 @@ void HttpEndpoint::handle(const HttpRequest& request, HttpResponse& out,
     return;
   }
   const std::optional<JsonView> id_value = document->find("id");
-  const std::string id = id_value.has_value() ? id_value->to_json().text : std::string{};
+  const std::string id =
+      id_value.has_value() ? id_value->to_json().text : std::string{};
   const std::optional<JsonView> method_value = document->find("method");
   const std::optional<std::string_view> method =
       method_value.has_value() ? method_value->string() : std::nullopt;
@@ -553,12 +563,14 @@ void HttpEndpoint::handle(const HttpRequest& request, HttpResponse& out,
                             "Header mismatch: MCP-Protocol-Version is given twice"));
     return;
   }
-  const std::optional<std::string_view> version = request.header("MCP-Protocol-Version");
+  const std::optional<std::string_view> version =
+      request.header("MCP-Protocol-Version");
   // A client of an earlier revision sends no version with `initialize`, and
   // its own after it. Under 2026-07-28 a session id means nothing.
   const bool legacy = !version.has_value() || is_legacy_version(*version);
   if (legacy) {
-    state.serve_legacy(request, out, *document, id, method.value_or(std::string_view{}));
+    state.serve_legacy(request, out, *document, id,
+                       method.value_or(std::string_view{}));
   } else {
     state.serve_modern(request, out, *document, id, method.value_or(std::string_view{}),
                        *version, std::move(stop));
@@ -570,7 +582,8 @@ void HttpEndpoint::State::serve_legacy(const HttpRequest& request, HttpResponse&
                                        const std::string_view method) {
   if (method == "initialize" && !id.empty()) {
     auto session = std::make_shared<Session>(*server);
-    const std::optional<std::string> response = session->connection.handle(request.body);
+    const std::optional<std::string> response =
+        session->connection.handle(request.body);
     if (!response.has_value()) {
       send_empty(out, 202);
       return;
@@ -586,11 +599,12 @@ void HttpEndpoint::State::serve_legacy(const HttpRequest& request, HttpResponse&
 
   const std::optional<std::string_view> session_id = request.header("Mcp-Session-Id");
   if (!session_id.has_value()) {
-    send_json(out, 400,
-              error_message(id, invalid_request,
-                            "Bad Request: the request names no protocol version. Send "
-                            "MCP-Protocol-Version and _meta for 2026-07-28, or initialize "
-                            "first and then Mcp-Session-Id"));
+    send_json(
+        out, 400,
+        error_message(id, invalid_request,
+                      "Bad Request: the request names no protocol version. Send "
+                      "MCP-Protocol-Version and _meta for 2026-07-28, or initialize "
+                      "first and then Mcp-Session-Id"));
     return;
   }
   const std::shared_ptr<Session> session = find(std::string{*session_id});
@@ -609,7 +623,8 @@ void HttpEndpoint::State::serve_legacy(const HttpRequest& request, HttpResponse&
         session->cancel(target->to_json().text);
       }
     }
-    const std::optional<std::string> response = session->connection.handle(request.body);
+    const std::optional<std::string> response =
+        session->connection.handle(request.body);
     if (response.has_value()) {
       send_json(out, status_of(*response, false), *response);
     } else {
@@ -731,9 +746,10 @@ void HttpEndpoint::State::serve_modern(const HttpRequest& request, HttpResponse&
   if (method.empty()) {
     send_json(out, 400,
               error_message(id, invalid_request,
-                            id.empty() ? "Invalid Request: a message needs a method"
-                                       : "Invalid Request: this server sends no requests, "
-                                         "so it takes no responses"));
+                            id.empty()
+                                ? "Invalid Request: a message needs a method"
+                                : "Invalid Request: this server sends no requests, "
+                                  "so it takes no responses"));
     return;
   }
   if (id.empty()) {
@@ -743,19 +759,22 @@ void HttpEndpoint::State::serve_modern(const HttpRequest& request, HttpResponse&
     return;
   }
   if (method == "initialize") {
-    send_json(out, 404,
-              error_message(id, method_not_found,
-                            "Method not found: initialize. 2026-07-28 has no handshake"));
+    send_json(
+        out, 404,
+        error_message(id, method_not_found,
+                      "Method not found: initialize. 2026-07-28 has no handshake"));
     return;
   }
 
   // The envelope comes first. A request without it is the connection's to
   // answer, and the answer is a bad request.
   const std::optional<JsonView> params = message.find("params");
-  const std::optional<JsonView> meta = is_object(params) ? params->find("_meta") : std::nullopt;
+  const std::optional<JsonView> meta =
+      is_object(params) ? params->find("_meta") : std::nullopt;
   const std::optional<JsonView> body_version =
       is_object(meta) ? meta->find(protocol_version_key) : std::nullopt;
-  const bool enveloped = body_version.has_value() && body_version->string().has_value() &&
+  const bool enveloped = body_version.has_value() &&
+                         body_version->string().has_value() &&
                          is_object(meta->find(client_capabilities_key));
   if (!enveloped) {
     std::optional<std::string> response = modern.handle(request.body);
@@ -771,7 +790,8 @@ void HttpEndpoint::State::serve_modern(const HttpRequest& request, HttpResponse&
   }
 
   const auto mismatch = [&](const std::string_view what) {
-    send_json(out, 400, error_message(id, header_mismatch, join({"Header mismatch: ", what})));
+    send_json(out, 400,
+              error_message(id, header_mismatch, join({"Header mismatch: ", what})));
   };
   if (*body_version->string() != version) {
     mismatch(join({"MCP-Protocol-Version is ", version, " but _meta names ",
@@ -783,10 +803,10 @@ void HttpEndpoint::State::serve_modern(const HttpRequest& request, HttpResponse&
     mismatch(join({"Mcp-Method must be given once, as ", method}));
     return;
   }
-  const std::string_view name_key =
-      method == "tools/call" || method == "prompts/get" ? "name"
-      : method == "resources/read"                       ? "uri"
-                                                         : "";
+  const std::string_view name_key = method == "tools/call" || method == "prompts/get"
+                                        ? "name"
+                                    : method == "resources/read" ? "uri"
+                                                                 : "";
   if (!name_key.empty()) {
     const std::optional<JsonView> name = params->find(name_key);
     const std::optional<std::string_view> body_name =
@@ -803,7 +823,8 @@ void HttpEndpoint::State::serve_modern(const HttpRequest& request, HttpResponse&
   }
   if (method == "subscriptions/listen" &&
       !accepts(request.header("Accept"), "text/event-stream")) {
-    send_plain(out, 406, "Accept must include text/event-stream for subscriptions/listen");
+    send_plain(out, 406,
+               "Accept must include text/event-stream for subscriptions/listen");
     return;
   }
 
@@ -813,7 +834,8 @@ void HttpEndpoint::State::serve_modern(const HttpRequest& request, HttpResponse&
   Reply reply{out, accepts(request.header("Accept"), "text/event-stream"), gone};
   const Notify notify = [&reply](const std::string_view text) { reply.event(text); };
   const std::stop_token cancelled = gone.get_token();
-  const std::optional<std::string> response = modern.handle(request.body, notify, cancelled);
+  const std::optional<std::string> response =
+      modern.handle(request.body, notify, cancelled);
   if (response.has_value()) {
     if (!cancelled.stop_requested()) {
       reply.finish(status_of(*response, true), *response);

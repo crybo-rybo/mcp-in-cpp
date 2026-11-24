@@ -146,12 +146,13 @@ TEST_CASE("serve_stdio answers each line with one line and ends with the input")
   std::ostringstream out;
 
   CHECK(mcp::serve_stdio(server, in, out) == 0);
-  CHECK(sorted_lines(out.str()) ==
-        sorted({called("1", text_content("5", false), "5"), support::result("2", "{}"),
-                support::error("", -32700,
-                               "Parse error: JSON text is not valid: expected a value at "
-                               "line 1, column 1"),
-                called("3", text_content("hello world", false), R"("hello world")")}));
+  CHECK(
+      sorted_lines(out.str()) ==
+      sorted({called("1", text_content("5", false), "5"), support::result("2", "{}"),
+              support::error("", -32700,
+                             "Parse error: JSON text is not valid: expected a value at "
+                             "line 1, column 1"),
+              called("3", text_content("hello world", false), R"("hello world")")}));
 }
 
 TEST_CASE("serve_stdio answers the requests in order when it runs one at a time") {
@@ -160,7 +161,8 @@ TEST_CASE("serve_stdio answers the requests in order when it runs one at a time"
 
   std::istringstream in{
       modern("1", "tools/call", R"("name":"add","arguments":{"a":2,"b":3})") + "\n" +
-      support::legacy("2", "ping") + "\n" + modern("3", "tools/call", R"("name":"greet")")};
+      support::legacy("2", "ping") + "\n" +
+      modern("3", "tools/call", R"("name":"greet")")};
   std::ostringstream out;
 
   CHECK(mcp::serve_stdio(server, in, out, {.concurrency = 1}) == 0);
@@ -173,11 +175,14 @@ TEST_CASE("serve_stdio answers the requests in order when it runs one at a time"
 TEST_CASE("a stop token parameter is not an argument") {
   const mcp::Server server = slow_server();
   mcp::Connection connection{server};
-  const std::optional<std::string> listed = connection.handle(modern("1", "tools/list"));
+  const std::optional<std::string> listed =
+      connection.handle(modern("1", "tools/list"));
   REQUIRE(listed.has_value());
   CHECK(listed->find(R"("name":"wait_for_cancel")") != std::string::npos);
-  CHECK(listed->find(R"("inputSchema":{"additionalProperties":false,"properties":{},"required":[],"type":"object"})") !=
-        std::string::npos);
+  CHECK(
+      listed->find(
+          R"("inputSchema":{"additionalProperties":false,"properties":{},"required":[],"type":"object"})") !=
+      std::string::npos);
 }
 
 TEST_CASE("a call receives the stop token its transport passed") {
@@ -248,7 +253,8 @@ TEST_CASE("a cancellation of initialize, or of a request that is not running, is
           "ignored") {
   std::vector<std::string> log;
   const mcp::Server server = support::sample_server(log);
-  std::istringstream in{cancelled("7") + "\n" + R"({"jsonrpc":"2.0","method":"notifications/cancelled"})" +
+  std::istringstream in{cancelled("7") + "\n" +
+                        R"({"jsonrpc":"2.0","method":"notifications/cancelled"})" +
                         "\n" + support::initialize("2025-11-25") + "\n"};
   std::ostringstream out;
 
@@ -310,7 +316,8 @@ struct Name {
   std::string name;
 };
 
-[[= mcp::tool{"Ask a name"}]] inline mcp::Result<std::string> who(mcp::Elicitation ask) {
+[[= mcp::tool{"Ask a name"}]] inline mcp::Result<std::string>
+    who(mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("Who?");
   if (!name) {
     return std::unexpected(name.error());
@@ -324,9 +331,10 @@ TEST_CASE("serve_stdio returns when the input ends while a call waits for the cl
   mcp::Server server{"sample", "0.0.1"};
   server.add<^^asks_on_stdio>();
   std::istringstream in{
-      support::legacy("0", "initialize",
-                      R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
-                      R"("clientInfo":{"name":"t","version":"1"}})") +
+      support::legacy(
+          "0", "initialize",
+          R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
+          R"("clientInfo":{"name":"t","version":"1"}})") +
       "\n" + support::legacy("1", "tools/call", R"({"name":"who"})") + "\n"};
   std::ostringstream out;
   CHECK(mcp::serve_stdio(server, in, out, {.concurrency = 1}) == 0);
@@ -391,9 +399,10 @@ TEST_CASE("a call that waits for the client gives up when the input ends") {
     ~Closing() { feed.close(); }
   } closing{feed};
 
-  feed.push(support::legacy("0", "initialize",
-                            R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
-                            R"("clientInfo":{"name":"t","version":"1"}})"));
+  feed.push(support::legacy(
+      "0", "initialize",
+      R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
+      R"("clientInfo":{"name":"t","version":"1"}})"));
   // A client waits for the handshake to finish before it calls.
   REQUIRE(watched.wait_for(R"("protocolVersion":"2025-11-25")"));
   feed.push(support::legacy("1", "tools/call", R"({"name":"who"})"));

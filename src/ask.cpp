@@ -18,14 +18,14 @@ namespace {
   return scrydantic::tool_error(std::move(text));
 }
 
-struct [[ = scrydantic::ignore_unknown, = scrydantic::skip_null ]] SampledMessage {
+struct[[ = scrydantic::ignore_unknown, = scrydantic::skip_null ]] SampledMessage {
   Role role{Role::assistant};
   scrydantic::Json content;
   std::string model;
   [[= scrydantic::name{"stopReason"}]] std::optional<std::string> stop_reason;
 };
 
-struct [[= scrydantic::ignore_unknown]] RootList {
+struct[[= scrydantic::ignore_unknown]] RootList {
   std::vector<Root> roots;
 };
 
@@ -33,7 +33,8 @@ struct [[= scrydantic::ignore_unknown]] RootList {
 // kind asked, under 2026-07-28, where the answer came with the request.
 void reject_answer(const Context& context, const std::string_view what,
                    const scrydantic::Error& error) {
-  if (detail::Inquiry* const inquiry = context.inquiry; inquiry != nullptr && inquiry->modern) {
+  if (detail::Inquiry* const inquiry = context.inquiry;
+      inquiry != nullptr && inquiry->modern) {
     const std::scoped_lock lock{inquiry->mutex};
     inquiry->invalid = std::string{what} + " is not valid: " + error.message;
   }
@@ -59,8 +60,9 @@ bool can_ask(const Context& context, const Need need) noexcept {
   return false;
 }
 
-Result<scrydantic::Json> ask(const Context& context, const Need need, const std::string_view key,
-                             const std::string_view method, std::string params) {
+Result<scrydantic::Json> ask(const Context& context, const Need need,
+                             const std::string_view key, const std::string_view method,
+                             std::string params) {
   Inquiry* const inquiry = context.inquiry;
   if (inquiry == nullptr) {
     return std::unexpected(failure("this call cannot ask the client anything"));
@@ -83,7 +85,8 @@ Result<scrydantic::Json> ask(const Context& context, const Need need, const std:
                                    " capability"));
   }
   if (inquiry->modern) {
-    if (const auto found = inquiry->answers.find(name); found != inquiry->answers.end()) {
+    if (const auto found = inquiry->answers.find(name);
+        found != inquiry->answers.end()) {
       if (!found->second.starts_with('{')) {
         inquiry->invalid = "inputResponses[\"" + name + "\"] must be an object";
         return std::unexpected(failure(*inquiry->invalid));
@@ -115,9 +118,10 @@ Result<scrydantic::Json> ask(const Context& context, const Need need, const std:
 
 } // namespace detail
 
-Result<Answer<scrydantic::Json>> Elicitation::form(const std::string_view message,
-                                                  const scrydantic::Json& requested_schema,
-                                                  const std::string_view key) const {
+Result<Answer<scrydantic::Json>>
+Elicitation::form(const std::string_view message,
+                  const scrydantic::Json& requested_schema,
+                  const std::string_view key) const {
   if (context_ == nullptr) {
     return std::unexpected(failure("no client to ask"));
   }
@@ -126,8 +130,9 @@ Result<Answer<scrydantic::Json>> Elicitation::form(const std::string_view messag
   params += R"(,"requestedSchema":)";
   params += requested_schema.text;
   params += '}';
-  Result<scrydantic::Json> answer = detail::ask(*context_, detail::Need::elicitation, key,
-                                                "elicitation/create", std::move(params));
+  Result<scrydantic::Json> answer =
+      detail::ask(*context_, detail::Need::elicitation, key, "elicitation/create",
+                  std::move(params));
   if (!answer) {
     return std::unexpected(std::move(answer).error());
   }
@@ -152,8 +157,9 @@ Result<SamplingResult> Sampling::create(const SamplingRequest& request,
   if (!params) {
     return std::unexpected(std::move(params).error());
   }
-  Result<scrydantic::Json> answer = detail::ask(*context_, detail::Need::sampling, key,
-                                                "sampling/createMessage", std::move(params->text));
+  Result<scrydantic::Json> answer =
+      detail::ask(*context_, detail::Need::sampling, key, "sampling/createMessage",
+                  std::move(params->text));
   if (!answer) {
     return std::unexpected(std::move(answer).error());
   }
@@ -163,12 +169,12 @@ Result<SamplingResult> Sampling::create(const SamplingRequest& request,
     return std::unexpected(std::move(message).error());
   }
   // The content is one block, or since 2025-11-25 a list of them.
-  Result<Content> content =
-      message->content.text.starts_with('[')
-          ? scrydantic::decode<Content>(message->content)
-          : scrydantic::decode<ContentBlock>(message->content).transform([](ContentBlock block) {
-              return Content{std::move(block)};
-            });
+  Result<Content> content = message->content.text.starts_with('[')
+                                ? scrydantic::decode<Content>(message->content)
+                                : scrydantic::decode<ContentBlock>(message->content)
+                                      .transform([](ContentBlock block) {
+                                        return Content{std::move(block)};
+                                      });
   if (!content) {
     return std::unexpected(std::move(content).error());
   }

@@ -137,7 +137,8 @@ TEST_CASE("a call of 2026-07-28 is answered with JSON when nothing streams") {
   const mcp::Server server = support::sample_server(log);
   mcp::HttpEndpoint endpoint{server};
 
-  const Recorded response = post(endpoint, modern_headers("tools/call", "add"), add_call);
+  const Recorded response =
+      post(endpoint, modern_headers("tools/call", "add"), add_call);
   CHECK(response.status == 200);
   CHECK(response.header("Content-Type") == "application/json");
   CHECK(response.body == called("1", text_content("5", false), "5"));
@@ -148,20 +149,19 @@ TEST_CASE("a call's progress opens an event stream that ends with the response")
   const mcp::Server server = support::sample_server(log);
   mcp::HttpEndpoint endpoint{server};
 
-  const Recorded response = post(
-      endpoint, modern_headers("tools/call", "count"),
-      R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"count",)"
-      R"("arguments":{"steps":1},"_meta":{"progressToken":"t",)"
-      R"("io.modelcontextprotocol/protocolVersion":"2026-07-28",)"
-      R"("io.modelcontextprotocol/clientCapabilities":{}}}})");
+  const Recorded response =
+      post(endpoint, modern_headers("tools/call", "count"),
+           R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"count",)"
+           R"("arguments":{"steps":1},"_meta":{"progressToken":"t",)"
+           R"("io.modelcontextprotocol/protocolVersion":"2026-07-28",)"
+           R"("io.modelcontextprotocol/clientCapabilities":{}}}})");
   CHECK(response.status == 200);
   CHECK(response.header("Content-Type") == "text/event-stream");
-  CHECK(response.body ==
-        "event: message\r\ndata: "
-        R"({"jsonrpc":"2.0","method":"notifications/progress",)"
-        R"("params":{"progress":1,"progressToken":"t","total":1}})"
-        "\r\n\r\nevent: message\r\ndata: " +
-            called("1", text_content("1", false), "1") + "\r\n\r\n");
+  CHECK(response.body == "event: message\r\ndata: "
+                         R"({"jsonrpc":"2.0","method":"notifications/progress",)"
+                         R"("params":{"progress":1,"progressToken":"t","total":1}})"
+                         "\r\n\r\nevent: message\r\ndata: " +
+                             called("1", text_content("1", false), "1") + "\r\n\r\n");
 }
 
 TEST_CASE("the routing headers must match the body") {
@@ -174,10 +174,12 @@ TEST_CASE("the routing headers must match the body") {
   };
 
   // A name in base64 is decoded before it is compared: "add".
-  CHECK(post(endpoint, modern_headers("tools/call", "=?base64?YWRk?="), add_call).body ==
-        called("1", text_content("5", false), "5"));
+  CHECK(
+      post(endpoint, modern_headers("tools/call", "=?base64?YWRk?="), add_call).body ==
+      called("1", text_content("5", false), "5"));
 
-  const Recorded wrong_name = post(endpoint, modern_headers("tools/call", "greet"), add_call);
+  const Recorded wrong_name =
+      post(endpoint, modern_headers("tools/call", "greet"), add_call);
   CHECK(wrong_name.status == 400);
   CHECK(code_of(wrong_name) == R"({"error":{"code":-32020)");
 
@@ -185,7 +187,8 @@ TEST_CASE("the routing headers must match the body") {
   CHECK(no_name.status == 400);
   CHECK(code_of(no_name) == R"({"error":{"code":-32020)");
 
-  const Recorded wrong_method = post(endpoint, modern_headers("tools/list", "add"), add_call);
+  const Recorded wrong_method =
+      post(endpoint, modern_headers("tools/list", "add"), add_call);
   CHECK(wrong_method.status == 400);
   CHECK(code_of(wrong_method) == R"({"error":{"code":-32020)");
 
@@ -228,9 +231,9 @@ TEST_CASE("a notification of 2026-07-28 is accepted and has no body") {
   const mcp::Server server = support::sample_server(log);
   mcp::HttpEndpoint endpoint{server};
 
-  const Recorded response =
-      post(endpoint, modern_headers("notifications/cancelled"),
-           R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}})");
+  const Recorded response = post(
+      endpoint, modern_headers("notifications/cancelled"),
+      R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}})");
   CHECK(response.status == 202);
   CHECK(response.body.empty());
 }
@@ -321,8 +324,8 @@ TEST_CASE("a handshake starts a session, which its id names until it ends") {
   endpoint.handle({.method = "DELETE", .headers = legacy_headers(*session), .body = {}},
                   ended);
   CHECK(ended.status == 204);
-  CHECK(post(endpoint, legacy_headers(*session), support::legacy("3", "tools/list")).status ==
-        404);
+  CHECK(post(endpoint, legacy_headers(*session), support::legacy("3", "tools/list"))
+            .status == 404);
 }
 
 TEST_CASE("a request of an earlier revision needs its session") {
@@ -330,9 +333,10 @@ TEST_CASE("a request of an earlier revision needs its session") {
   const mcp::Server server = support::sample_server(log);
   mcp::HttpEndpoint endpoint{server};
 
-  CHECK(post(endpoint, legacy_headers(), support::legacy("1", "tools/list")).status == 400);
-  CHECK(post(endpoint, legacy_headers("0123"), support::legacy("1", "tools/list")).status ==
-        404);
+  CHECK(post(endpoint, legacy_headers(), support::legacy("1", "tools/list")).status ==
+        400);
+  CHECK(post(endpoint, legacy_headers("0123"), support::legacy("1", "tools/list"))
+            .status == 404);
 }
 
 TEST_CASE("a session's call is cancelled by a notification, and its stream ends with "
@@ -350,9 +354,9 @@ TEST_CASE("a session's call is cancelled by a notification, and its stream ends 
                 support::legacy("5", "tools/call", R"({"name":"wait_for_cancel"})"));
   }};
   REQUIRE(slow_http::started.try_acquire_for(std::chrono::seconds{10}));
-  const Recorded cancel =
-      post(endpoint, legacy_headers(session),
-           R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}})");
+  const Recorded cancel = post(
+      endpoint, legacy_headers(session),
+      R"({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}})");
   CHECK(cancel.status == 202);
   calling.join();
 
@@ -370,7 +374,8 @@ TEST_CASE("under 2026-07-28 a client that goes away cancels its call") {
   Recorded call;
   std::jthread calling{[&] {
     call = post(endpoint, modern_headers("tools/call", "wait_for_cancel"),
-                modern("1", "tools/call", R"("name":"wait_for_cancel")"), gone.get_token());
+                modern("1", "tools/call", R"("name":"wait_for_cancel")"),
+                gone.get_token());
   }};
   REQUIRE(slow_http::started.try_acquire_for(std::chrono::seconds{10}));
   gone.request_stop();
@@ -389,10 +394,11 @@ TEST_CASE("a subscription is acknowledged on its stream, which stays open until 
   // The client is gone after the acknowledgment and two keepalives.
   Recorded response;
   response.writes_left = 3;
-  endpoint.handle({.method = "POST",
-                   .headers = modern_headers("subscriptions/listen"),
-                   .body = modern("9", "subscriptions/listen", R"("notifications":{})")},
-                  response);
+  endpoint.handle(
+      {.method = "POST",
+       .headers = modern_headers("subscriptions/listen"),
+       .body = modern("9", "subscriptions/listen", R"("notifications":{})")},
+      response);
   CHECK(response.header("Content-Type") == "text/event-stream");
   CHECK(response.body ==
         "event: message\r\ndata: "
@@ -404,7 +410,9 @@ TEST_CASE("a subscription is acknowledged on its stream, which stays open until 
 
 namespace watched {
 
-[[= mcp::resource{.uri = "test://watched"}]] inline std::string watched() { return "now"; }
+[[= mcp::resource{.uri = "test://watched"}]] inline std::string watched() {
+  return "now";
+}
 
 } // namespace watched
 
@@ -415,16 +423,18 @@ TEST_CASE("a session's GET stream carries the updates of what it subscribed to")
   const Recorded initialized =
       post(endpoint, legacy_headers(), support::initialize("2025-11-25"));
   const std::string session = initialized.header("Mcp-Session-Id").value_or("");
-  REQUIRE(post(endpoint, legacy_headers(session),
-               support::legacy("1", "resources/subscribe", R"({"uri":"test://watched"})"))
-              .body == support::result("1", "{}"));
+  REQUIRE(
+      post(endpoint, legacy_headers(session),
+           support::legacy("1", "resources/subscribe", R"({"uri":"test://watched"})"))
+          .body == support::result("1", "{}"));
 
   // The stream opens with a comment and carries the update, then the client
   // is gone at the next keepalive.
   Recorded stream;
   stream.writes_left = 2;
   std::jthread streaming{[&] {
-    endpoint.handle({.method = "GET", .headers = legacy_headers(session), .body = {}}, stream);
+    endpoint.handle({.method = "GET", .headers = legacy_headers(session), .body = {}},
+                    stream);
   }};
   while (!stream.started()) {
     std::this_thread::yield();
@@ -453,13 +463,15 @@ TEST_CASE("ending a session ends its GET stream") {
           .value_or("");
   Recorded stream;
   std::jthread streaming{[&] {
-    endpoint.handle({.method = "GET", .headers = legacy_headers(session), .body = {}}, stream);
+    endpoint.handle({.method = "GET", .headers = legacy_headers(session), .body = {}},
+                    stream);
   }};
   while (!stream.started()) {
     std::this_thread::yield();
   }
   Recorded ended;
-  endpoint.handle({.method = "DELETE", .headers = legacy_headers(session), .body = {}}, ended);
+  endpoint.handle({.method = "DELETE", .headers = legacy_headers(session), .body = {}},
+                  ended);
   CHECK(ended.status == 204);
   // The stream returns without waiting for its next keepalive.
   streaming.join();
@@ -472,7 +484,8 @@ struct Name {
   std::string name;
 };
 
-[[= mcp::tool{"Ask a name"}]] inline mcp::Result<std::string> who(mcp::Elicitation ask) {
+[[= mcp::tool{"Ask a name"}]] inline mcp::Result<std::string>
+    who(mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("Who?");
   if (!name) {
     return std::unexpected(name.error());
@@ -488,19 +501,23 @@ TEST_CASE("a session's client that takes no stream is not asked, and does not wa
   mcp::HttpEndpoint endpoint{server};
   const std::string session =
       post(endpoint, legacy_headers(),
-           support::legacy("0", "initialize",
-                           R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
-                           R"("clientInfo":{"name":"t","version":"1"}})"))
+           support::legacy(
+               "0", "initialize",
+               R"({"protocolVersion":"2025-11-25","capabilities":{"elicitation":{}},)"
+               R"("clientInfo":{"name":"t","version":"1"}})"))
           .header("Mcp-Session-Id")
           .value_or("");
   std::vector<mcp::HttpHeader> headers = legacy_headers(session);
   headers[2].value = "application/json";
-  const Recorded call = post(endpoint, headers, support::legacy("1", "tools/call", R"({"name":"who"})"));
-  CHECK(call.body == support::result("1", R"({"content":[{"text":"the client cannot be reached )"
-                                          R"(from this call","type":"text"}],"isError":true})"));
+  const Recorded call =
+      post(endpoint, headers, support::legacy("1", "tools/call", R"({"name":"who"})"));
+  CHECK(call.body ==
+        support::result("1", R"({"content":[{"text":"the client cannot be reached )"
+                             R"(from this call","type":"text"}],"isError":true})"));
 }
 
-TEST_CASE("a request of 2026-07-28 without its envelope is an error, whatever its method") {
+TEST_CASE(
+    "a request of 2026-07-28 without its envelope is an error, whatever its method") {
   std::vector<std::string> log;
   const mcp::Server server = support::sample_server(log);
   mcp::HttpEndpoint endpoint{server};

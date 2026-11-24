@@ -199,8 +199,10 @@ int serve_stdio(const Server& server, std::istream& in, std::ostream& out,
   Lines lines{out};
   // The updates of resources the client subscribed to go out between the
   // responses.
-  connection.push_to([&lines](const std::string_view message) { lines.write(message); });
-  Dispatcher dispatcher{connection, lines, std::max<std::size_t>(options.concurrency, 1)};
+  connection.push_to(
+      [&lines](const std::string_view message) { lines.write(message); });
+  Dispatcher dispatcher{connection, lines,
+                        std::max<std::size_t>(options.concurrency, 1)};
   std::string line;
   while (std::getline(in, line)) {
     if (!line.empty() && line.back() == '\r') {

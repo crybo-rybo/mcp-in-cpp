@@ -28,8 +28,8 @@ struct Guest {
   std::int32_t seats{1};
 };
 
-[[= mcp::tool{"Book a table"}]] inline mcp::Result<std::string> book(std::string place,
-                                                                     mcp::Elicitation ask) {
+[[= mcp::tool{"Book a table"}]] inline mcp::Result<std::string>
+    book(std::string place, mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<Guest>> guest = ask.form<Guest>("Who is it for?");
   if (!guest) {
     return std::unexpected(guest.error());
@@ -49,7 +49,8 @@ struct Color {
   std::string color;
 };
 
-[[= mcp::tool{"Ask two questions, one after the other"}]] inline mcp::Result<std::string>
+[[= mcp::tool{
+    "Ask two questions, one after the other"}]] inline mcp::Result<std::string>
     two_steps(mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("Your name?", "step1");
   if (!name) {
@@ -70,7 +71,8 @@ struct Color {
   if (!answer) {
     return std::unexpected(answer.error());
   }
-  return std::get<mcp::TextContent>(answer->content.at(0)).text + " from " + answer->model;
+  return std::get<mcp::TextContent>(answer->content.at(0)).text + " from " +
+         answer->model;
 }
 
 [[= mcp::tool{"Count the client's roots"}]] inline mcp::Result<std::string>
@@ -95,7 +97,8 @@ mcp::Server asking_server() {
 // A tools/call of 2026-07-28 from a client with `capabilities`, and with
 // `rest` further members of its params.
 std::string call(const std::string_view id, const std::string_view name,
-                 const std::string_view capabilities, const std::string_view rest = {}) {
+                 const std::string_view capabilities,
+                 const std::string_view rest = {}) {
   std::string text{R"({"jsonrpc":"2.0","id":)"};
   text += id;
   text += R"(,"method":"tools/call","params":{"name":")";
@@ -112,9 +115,11 @@ std::string call(const std::string_view id, const std::string_view name,
 }
 
 // A member of a response's result, as JSON text.
-std::string result_member(const std::optional<std::string>& response, const std::string_view key) {
+std::string result_member(const std::optional<std::string>& response,
+                          const std::string_view key) {
   REQUIRE(response.has_value());
-  const scrydantic::Result<scrydantic::JsonView> document = scrydantic::JsonView::parse(*response);
+  const scrydantic::Result<scrydantic::JsonView> document =
+      scrydantic::JsonView::parse(*response);
   REQUIRE(document);
   const std::optional<scrydantic::JsonView> result = document->find("result");
   REQUIRE(result.has_value());
@@ -131,23 +136,26 @@ TEST_CASE("a question without an answer ends the round with input_required") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
 
-  const std::optional<std::string> first =
-      connection.handle(call("1", "book", everything, R"("arguments":{"place":"Lima"})"));
+  const std::optional<std::string> first = connection.handle(
+      call("1", "book", everything, R"("arguments":{"place":"Lima"})"));
   CHECK(result_member(first, "resultType") == R"("input_required")");
-  CHECK(result_member(first, "inputRequests") ==
-        R"({"input-1":{"method":"elicitation/create","params":{"message":"Who is it for?",)"
-        R"("mode":"form","requestedSchema":{"properties":{"name":{"description":)"
-        R"("Who the table is for","type":"string"},"seats":{"default":1,"maximum":2147483647,)"
-        R"("minimum":-2147483648,"type":"integer"}},"required":["name"],"type":"object"}}}})");
+  CHECK(
+      result_member(first, "inputRequests") ==
+      R"({"input-1":{"method":"elicitation/create","params":{"message":"Who is it for?",)"
+      R"("mode":"form","requestedSchema":{"properties":{"name":{"description":)"
+      R"("Who the table is for","type":"string"},"seats":{"default":1,"maximum":2147483647,)"
+      R"("minimum":-2147483648,"type":"integer"}},"required":["name"],"type":"object"}}}})");
   const std::string state = result_member(first, "requestState");
   REQUIRE(state.size() > 2);
 
   // The client asks the person and sends the call again with the answer.
-  std::string retry{R"("arguments":{"place":"Lima"},"inputResponses":{"input-1":)"
-                    R"({"action":"accept","content":{"name":"Ada","seats":2}}},"requestState":)"};
+  std::string retry{
+      R"("arguments":{"place":"Lima"},"inputResponses":{"input-1":)"
+      R"({"action":"accept","content":{"name":"Ada","seats":2}}},"requestState":)"};
   retry += state;
   CHECK(connection.handle(call("2", "book", everything, retry)) ==
-        called("2", text_content("booked 2 at Lima for Ada", false), R"("booked 2 at Lima for Ada")"));
+        called("2", text_content("booked 2 at Lima for Ada", false),
+               R"("booked 2 at Lima for Ada")"));
 
   // A form the person declined.
   CHECK(connection.handle(call("3", "book", everything,
@@ -160,7 +168,8 @@ TEST_CASE("each round's answers travel to the next in the signed state") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
 
-  const std::optional<std::string> first = connection.handle(call("1", "two_steps", everything));
+  const std::optional<std::string> first =
+      connection.handle(call("1", "two_steps", everything));
   CHECK(result_member(first, "inputRequests").starts_with(R"({"step1":)"));
 
   std::string second_round{R"("inputResponses":{"step1":{"action":"accept","content":)"
@@ -181,8 +190,8 @@ TEST_CASE("each round's answers travel to the next in the signed state") {
 TEST_CASE("a state that was changed, or that belongs to another call, is refused") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
-  const std::optional<std::string> first =
-      connection.handle(call("1", "book", everything, R"("arguments":{"place":"Lima"})"));
+  const std::optional<std::string> first = connection.handle(
+      call("1", "book", everything, R"("arguments":{"place":"Lima"})"));
   std::string state = result_member(first, "requestState");
   const std::string refused =
       R"({"error":{"code":-32602,"data":{"reason":"invalid_request_state"},)"
@@ -190,24 +199,25 @@ TEST_CASE("a state that was changed, or that belongs to another call, is refused
 
   // The same state for other arguments.
   CHECK(connection.handle(call("2", "book", everything,
-                               R"("arguments":{"place":"Oslo"},"requestState":)" + state)) ==
-        refused);
+                               R"("arguments":{"place":"Oslo"},"requestState":)" +
+                                   state)) == refused);
 
   // One character of the state changed.
   state[state.size() / 2] = state[state.size() / 2] == 'A' ? 'B' : 'A';
   CHECK(connection.handle(call("2", "book", everything,
-                               R"("arguments":{"place":"Lima"},"requestState":)" + state)) ==
-        refused);
+                               R"("arguments":{"place":"Lima"},"requestState":)" +
+                                   state)) == refused);
 
   // A state from another server, whose key differs.
   const mcp::Server other = asking_server();
   mcp::Connection elsewhere{other};
-  const std::string foreign = result_member(
-      elsewhere.handle(call("1", "book", everything, R"("arguments":{"place":"Lima"})")),
-      "requestState");
+  const std::string foreign =
+      result_member(elsewhere.handle(call("1", "book", everything,
+                                          R"("arguments":{"place":"Lima"})")),
+                    "requestState");
   CHECK(connection.handle(call("2", "book", everything,
-                               R"("arguments":{"place":"Lima"},"requestState":)" + foreign)) ==
-        refused);
+                               R"("arguments":{"place":"Lima"},"requestState":)" +
+                                   foreign)) == refused);
 }
 
 TEST_CASE("servers that share a key accept each other's state") {
@@ -221,26 +231,29 @@ TEST_CASE("servers that share a key accept each other's state") {
   const std::string state = result_member(
       first.handle(call("1", "book", everything, R"("arguments":{"place":"Lima"})")),
       "requestState");
-  CHECK(second.handle(call("2", "book", everything,
-                           R"("arguments":{"place":"Lima"},"inputResponses":{"input-1":)"
-                           R"({"action":"accept","content":{"name":"Bo"}}},"requestState":)" +
-                               state)) ==
-        called("2", text_content("booked 1 at Lima for Bo", false), R"("booked 1 at Lima for Bo")"));
+  CHECK(second.handle(call(
+            "2", "book", everything,
+            R"("arguments":{"place":"Lima"},"inputResponses":{"input-1":)"
+            R"({"action":"accept","content":{"name":"Bo"}}},"requestState":)" +
+                state)) == called("2", text_content("booked 1 at Lima for Bo", false),
+                                  R"("booked 1 at Lima for Bo")"));
 }
 
 TEST_CASE("a client that did not declare a capability is not asked") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
 
-  CHECK(connection.handle(call("1", "book", "{}", R"("arguments":{"place":"Lima"})")) ==
-        R"({"error":{"code":-32021,"data":{"requiredCapabilities":{"elicitation":{"form":{}}}},)"
-        R"("message":"Missing required client capability"},"id":1,"jsonrpc":"2.0"})");
+  CHECK(
+      connection.handle(call("1", "book", "{}", R"("arguments":{"place":"Lima"})")) ==
+      R"({"error":{"code":-32021,"data":{"requiredCapabilities":{"elicitation":{"form":{}}}},)"
+      R"("message":"Missing required client capability"},"id":1,"jsonrpc":"2.0"})");
   CHECK(connection.handle(call("2", "word", R"({"elicitation":{}})")) ==
         R"({"error":{"code":-32021,"data":{"requiredCapabilities":{"sampling":{}}},)"
         R"("message":"Missing required client capability"},"id":2,"jsonrpc":"2.0"})");
   // A client that can open only URLs cannot show a form.
-  CHECK(connection.handle(call("3", "book", R"({"elicitation":{"url":{}}})",
-                               R"("arguments":{"place":"Lima"})"))
+  CHECK(connection
+            .handle(call("3", "book", R"({"elicitation":{"url":{}}})",
+                         R"("arguments":{"place":"Lima"})"))
             ->starts_with(R"({"error":{"code":-32021)"));
 }
 
@@ -248,31 +261,37 @@ TEST_CASE("sampling and roots are asked in rounds too") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
 
-  const std::optional<std::string> asked = connection.handle(call("1", "word", everything));
-  CHECK(result_member(asked, "inputRequests") ==
-        R"({"input-1":{"method":"sampling/createMessage","params":{"maxTokens":10,)"
-        R"("messages":[{"content":{"text":"A word?","type":"text"},"role":"user"}]}}})");
-  CHECK(connection.handle(call("2", "word", everything,
-                               R"("inputResponses":{"input-1":{"role":"assistant",)"
-                               R"("content":{"type":"text","text":"hello"},"model":"m1",)"
-                               R"("stopReason":"endTurn"}})")) ==
-        called("2", text_content("hello from m1", false), R"("hello from m1")"));
+  const std::optional<std::string> asked =
+      connection.handle(call("1", "word", everything));
+  CHECK(
+      result_member(asked, "inputRequests") ==
+      R"({"input-1":{"method":"sampling/createMessage","params":{"maxTokens":10,)"
+      R"("messages":[{"content":{"text":"A word?","type":"text"},"role":"user"}]}}})");
+  CHECK(
+      connection.handle(call("2", "word", everything,
+                             R"("inputResponses":{"input-1":{"role":"assistant",)"
+                             R"("content":{"type":"text","text":"hello"},"model":"m1",)"
+                             R"("stopReason":"endTurn"}})")) ==
+      called("2", text_content("hello from m1", false), R"("hello from m1")"));
 
-  CHECK(result_member(connection.handle(call("3", "count_roots", everything)), "inputRequests") ==
+  CHECK(result_member(connection.handle(call("3", "count_roots", everything)),
+                      "inputRequests") ==
         R"({"input-1":{"method":"roots/list","params":{}}})");
-  CHECK(connection.handle(call("4", "count_roots", everything,
-                               R"("inputResponses":{"input-1":{"roots":[{"uri":"file:///a"},)"
-                               R"({"uri":"file:///b","name":"b"}]}})")) ==
+  CHECK(connection.handle(
+            call("4", "count_roots", everything,
+                 R"("inputResponses":{"input-1":{"roots":[{"uri":"file:///a"},)"
+                 R"({"uri":"file:///b","name":"b"}]}})")) ==
         called("4", text_content("2 roots", false), R"("2 roots")"));
 }
 
 TEST_CASE("in a session the server asks the client and the call waits for its answer") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
-  REQUIRE(connection.handle(legacy("0", "initialize",
-                                   R"({"protocolVersion":"2025-11-25","capabilities":)"
-                                   R"({"elicitation":{},"sampling":{}},"clientInfo":)"
-                                   R"({"name":"test","version":"1"}})"))
+  REQUIRE(connection
+              .handle(legacy("0", "initialize",
+                             R"({"protocolVersion":"2025-11-25","capabilities":)"
+                             R"({"elicitation":{},"sampling":{}},"clientInfo":)"
+                             R"({"name":"test","version":"1"}})"))
               .has_value());
 
   std::mutex mutex;
@@ -288,16 +307,17 @@ TEST_CASE("in a session the server asks the client and the call waits for its an
 
   std::optional<std::string> response;
   std::jthread calling{[&] {
-    response = connection.handle(legacy("1", "tools/call",
-                                        R"({"name":"book","arguments":{"place":"Lima"}})"),
-                                 notify);
+    response = connection.handle(
+        legacy("1", "tools/call", R"({"name":"book","arguments":{"place":"Lima"}})"),
+        notify);
   }};
   REQUIRE(asked.try_acquire_for(std::chrono::seconds{10}));
   {
     const std::scoped_lock lock{mutex};
     REQUIRE(sent.size() == 1);
-    CHECK(sent[0].starts_with(R"({"id":1,"jsonrpc":"2.0","method":"elicitation/create",)"
-                              R"("params":{"mode":"form","message":"Who is it for?",)"));
+    CHECK(
+        sent[0].starts_with(R"({"id":1,"jsonrpc":"2.0","method":"elicitation/create",)"
+                            R"("params":{"mode":"form","message":"Who is it for?",)"));
   }
   // The client's response comes in as a message of its own.
   CHECK_FALSE(connection
@@ -305,20 +325,25 @@ TEST_CASE("in a session the server asks the client and the call waits for its an
                           R"("content":{"name":"Cy","seats":4}}})")
                   .has_value());
   calling.join();
-  CHECK(response == support::result("1", R"({"content":[{"text":"booked 4 at Lima for Cy",)"
-                                         R"("type":"text"}],"isError":false})"));
+  CHECK(response == support::result("1",
+                                    R"({"content":[{"text":"booked 4 at Lima for Cy",)"
+                                    R"("type":"text"}],"isError":false})"));
 
   // A client without roots is not asked for them.
-  CHECK(connection.handle(legacy("2", "tools/call", R"({"name":"count_roots"})"), notify)
-            ->starts_with(R"({"error":{"code":-32021,"data":{"requiredCapabilities":{"roots":{}}})"));
+  CHECK(
+      connection.handle(legacy("2", "tools/call", R"({"name":"count_roots"})"), notify)
+          ->starts_with(
+              R"({"error":{"code":-32021,"data":{"requiredCapabilities":{"roots":{}}})"));
 }
 
 TEST_CASE("a session's question ends with the call when the client cancels it") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
-  REQUIRE(connection.handle(legacy("0", "initialize",
-                                   R"({"protocolVersion":"2025-06-18","capabilities":)"
-                                   R"({"elicitation":{}},"clientInfo":{"name":"t","version":"1"}})"))
+  REQUIRE(connection
+              .handle(legacy(
+                  "0", "initialize",
+                  R"({"protocolVersion":"2025-06-18","capabilities":)"
+                  R"({"elicitation":{}},"clientInfo":{"name":"t","version":"1"}})"))
               .has_value());
   std::counting_semaphore<> asked{0};
   std::string question;
@@ -329,35 +354,42 @@ TEST_CASE("a session's question ends with the call when the client cancels it") 
   std::stop_source stop;
   std::optional<std::string> response;
   std::jthread calling{[&] {
-    response = connection.handle(legacy("1", "tools/call",
-                                        R"({"name":"book","arguments":{"place":"Lima"}})"),
-                                 notify, stop.get_token());
+    response = connection.handle(
+        legacy("1", "tools/call", R"({"name":"book","arguments":{"place":"Lima"}})"),
+        notify, stop.get_token());
   }};
   REQUIRE(asked.try_acquire_for(std::chrono::seconds{10}));
   // 2025-06-18 has no form mode.
   CHECK(question.find(R"("mode")") == std::string::npos);
   stop.request_stop();
   calling.join();
-  CHECK(response == support::result("1", R"({"content":[{"text":"the call was cancelled",)"
-                                         R"("type":"text"}],"isError":true})"));
+  CHECK(response == support::result("1",
+                                    R"({"content":[{"text":"the call was cancelled",)"
+                                    R"("type":"text"}],"isError":true})"));
 }
 
 TEST_CASE("an answer that is not a response to its question is invalid params") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
-  CHECK(connection.handle(call("1", "book", everything,
-                               R"("arguments":{"place":"Lima"},"inputResponses":{"input-1":42})")) ==
-        error("1", -32602, R"(Invalid params: inputResponses[\"input-1\"] must be an object)"));
-  CHECK(connection.handle(call("2", "book", everything,
-                               R"("arguments":{"place":"Lima"},"inputResponses":)"
-                               R"({"input-1":{"action":"maybe"}})"))
-            ->starts_with(R"({"error":{"code":-32602,"message":"Invalid params: the answer to a form)"));
+  CHECK(connection.handle(
+            call("1", "book", everything,
+                 R"("arguments":{"place":"Lima"},"inputResponses":{"input-1":42})")) ==
+        error("1", -32602,
+              R"(Invalid params: inputResponses[\"input-1\"] must be an object)"));
+  CHECK(
+      connection
+          .handle(call("2", "book", everything,
+                       R"("arguments":{"place":"Lima"},"inputResponses":)"
+                       R"({"input-1":{"action":"maybe"}})"))
+          ->starts_with(
+              R"({"error":{"code":-32602,"message":"Invalid params: the answer to a form)"));
 }
 
 TEST_CASE("an answer the state carries cannot be changed by a later round") {
   const mcp::Server server = asking_server();
   mcp::Connection connection{server};
-  const std::optional<std::string> first = connection.handle(call("1", "two_steps", everything));
+  const std::optional<std::string> first =
+      connection.handle(call("1", "two_steps", everything));
   std::string second_round{R"("inputResponses":{"step1":{"action":"accept","content":)"
                            R"({"name":"Ada"}}},"requestState":)"};
   second_round += result_member(first, "requestState");

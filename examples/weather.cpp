@@ -13,11 +13,11 @@
 //
 //   ./mcp_weather_example --http 8000
 
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <expected>
-#include <charconv>
 #include <httplib.h>
 #include <iostream>
 #include <mcp/httplib.hpp>
@@ -67,16 +67,17 @@ struct Alert {
 // A resource template: `{city}` is the parameter of the same name.
 [[= mcp::resource{.uri = "weather://{city}/alerts",
                   .description = "Storm alerts for a city",
-                  .mime_type = "application/json"}]]
-mcp::Result<std::vector<Alert>> alerts(std::string city) {
+                  .mime_type = "application/json"}]] mcp::Result<std::vector<Alert>>
+    alerts(std::string city) {
   if (city != "Lima" && city != "Oslo") {
     return std::unexpected(mcp::tool_error("no alerts are kept for " + city));
   }
   return std::vector<Alert>{{.kind = city == "Oslo" ? "snow" : "fog", .in_hours = 6}};
 }
 
-[[= mcp::resource{.uri = "weather://about", .description = "Where the forecasts come from"}]]
-std::string about() {
+[[= mcp::resource{.uri = "weather://about",
+                  .description = "Where the forecasts come from"}]] std::string
+    about() {
   return "Forecasts are made up for the example.";
 }
 
@@ -93,9 +94,11 @@ struct Confirm {
 
 // Asks the person before it acts. Under 2026-07-28 the call runs again with
 // the answer; in a handshake session it waits for it.
-[[= mcp::tool{"Make a city the home city, once the person confirms"}]] mcp::Result<std::string>
+[[= mcp::tool{
+    "Make a city the home city, once the person confirms"}]] mcp::Result<std::string>
     set_home(std::string city, mcp::Elicitation ask) {
-  mcp::Result<mcp::Answer<Confirm>> answer = ask.form<Confirm>("Make " + city + " the home city?");
+  mcp::Result<mcp::Answer<Confirm>> answer =
+      ask.form<Confirm>("Make " + city + " the home city?");
   if (!answer) {
     return std::unexpected(answer.error());
   }

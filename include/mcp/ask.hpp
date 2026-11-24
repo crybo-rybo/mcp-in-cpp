@@ -69,8 +69,8 @@ enum class Need : std::uint8_t { elicitation, sampling, roots };
 // Asks the client one question of the call that `context` serves, and returns
 // its answer as JSON text: the result of the client's request.
 [[nodiscard]] Result<scrydantic::Json> ask(const Context& context, Need need,
-                                           std::string_view key, std::string_view method,
-                                           std::string params);
+                                           std::string_view key,
+                                           std::string_view method, std::string params);
 
 // Whether the client of the call that `context` serves can be asked this.
 [[nodiscard]] bool can_ask(const Context& context, Need need) noexcept;
@@ -112,7 +112,7 @@ enum class Action : std::uint8_t {
 namespace detail {
 
 // The result of elicitation/create, before its content is read as the form.
-struct [[ = scrydantic::ignore_unknown, = scrydantic::skip_null ]] ElicitReply {
+struct[[ = scrydantic::ignore_unknown, = scrydantic::skip_null ]] ElicitReply {
   Action action{};
   std::optional<scrydantic::Json> content;
 };
@@ -159,8 +159,8 @@ public:
     Answer<Form> result{.action = answer->action, .content = std::nullopt};
     if (answer->content.has_value()) {
       Result<Form> content = scrydantic::decode<Form>(
-          *answer->content,
-          scrydantic::DecodeOptions{.coerce_scalars = true, .coerce_structures = false});
+          *answer->content, scrydantic::DecodeOptions{.coerce_scalars = true,
+                                                      .coerce_structures = false});
       if (!content) {
         return std::unexpected(std::move(content).error());
       }
@@ -182,8 +182,8 @@ private:
 };
 
 /// A request to the client's model.
-struct [[ = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null ]]
-SamplingRequest {
+struct[[ = scrydantic::rename_all{scrydantic::camel_case}, = scrydantic::skip_null ]]
+    SamplingRequest {
   /// The conversation so far.
   std::vector<PromptMessage> messages;
   /// The most tokens the model may write.
@@ -229,7 +229,7 @@ private:
 };
 
 /// A directory or file that the client lets the server work in.
-struct [[ = scrydantic::skip_null, = scrydantic::ignore_unknown ]] Root {
+struct[[ = scrydantic::skip_null, = scrydantic::ignore_unknown ]] Root {
   /// A `file://` URI.
   std::string uri;
   std::optional<std::string> name{};
@@ -275,5 +275,7 @@ template <> struct scrydantic::supplier<mcp::Sampling, mcp::Context> {
 
 /// Lets a function take an mcp::Roots parameter in any position.
 template <> struct scrydantic::supplier<mcp::Roots, mcp::Context> {
-  static mcp::Roots supply(const mcp::Context& context) noexcept { return mcp::Roots{context}; }
+  static mcp::Roots supply(const mcp::Context& context) noexcept {
+    return mcp::Roots{context};
+  }
 };

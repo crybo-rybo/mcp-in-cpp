@@ -5,10 +5,10 @@
 #include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <cstddef>
-#include <memory>
-#include <span>
 #include <mcp/mcp.hpp>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -80,8 +80,9 @@ TEST_CASE("a requestState that the server did not sign is invalid params") {
   const mcp::Server server = support::sample_server(log);
   mcp::Connection connection{server};
 
-  CHECK(connection.handle(modern("1", "tools/call",
-                                 R"("name":"add","arguments":{"a":2,"b":3},"requestState":"abc")")) ==
+  CHECK(connection.handle(
+            modern("1", "tools/call",
+                   R"("name":"add","arguments":{"a":2,"b":3},"requestState":"abc")")) ==
         R"({"error":{"code":-32602,"data":{"reason":"invalid_request_state"},)"
         R"("message":"Invalid or expired requestState"},"id":1,"jsonrpc":"2.0"})");
 }
@@ -254,22 +255,31 @@ TEST_CASE("a tool that returns content sends its blocks, with no output schema")
   server.add<^^media>();
   mcp::Connection connection{server};
 
-  const std::optional<std::string> listed = connection.handle(modern("1", "tools/list"));
+  const std::optional<std::string> listed =
+      connection.handle(modern("1", "tools/list"));
   REQUIRE(listed.has_value());
   // `add` keeps its output schema; the content tools have none.
   CHECK(listed->find(R"("name":"picture","outputSchema")") == std::string::npos);
   CHECK(listed->find(R"("name":"sound","outputSchema")") == std::string::npos);
   CHECK(listed->find(R"("name":"add","outputSchema")") != std::string::npos);
 
-  CHECK(connection.handle(modern("2", "tools/call", R"("name":"picture")")) ==
-        called("2", R"("content":[{"text":"a picture:","type":"text"},)"
-                    R"({"data":"iVBO","mimeType":"image/png","type":"image"},)"
-                    R"({"resource":{"mimeType":"text/plain","text":"a note","uri":"test://note"},)"
-                    R"("type":"resource"},{"name":"more","type":"resource_link","uri":"test://more"}],)"
-                    R"("isError":false)"));
-  CHECK(connection.handle(modern("3", "tools/call", R"("name":"sound","arguments":{"play":true})")) ==
-        called("3", R"("content":[{"data":"aGk=","mimeType":"audio/wav","type":"audio"}],"isError":false)"));
-  CHECK(connection.handle(modern("4", "tools/call", R"("name":"sound","arguments":{"play":false})")) ==
+  CHECK(
+      connection.handle(modern("2", "tools/call", R"("name":"picture")")) ==
+      called(
+          "2",
+          R"("content":[{"text":"a picture:","type":"text"},)"
+          R"({"data":"iVBO","mimeType":"image/png","type":"image"},)"
+          R"({"resource":{"mimeType":"text/plain","text":"a note","uri":"test://note"},)"
+          R"("type":"resource"},{"name":"more","type":"resource_link","uri":"test://more"}],)"
+          R"("isError":false)"));
+  CHECK(
+      connection.handle(
+          modern("3", "tools/call", R"("name":"sound","arguments":{"play":true})")) ==
+      called(
+          "3",
+          R"("content":[{"data":"aGk=","mimeType":"audio/wav","type":"audio"}],"isError":false)"));
+  CHECK(connection.handle(modern("4", "tools/call",
+                                 R"("name":"sound","arguments":{"play":false})")) ==
         called("4", text_content("not now", true)));
 }
 

@@ -23,15 +23,18 @@ constexpr std::array<std::uint32_t, 64> rounds{
     0xc67178f2,
 };
 
-[[nodiscard]] constexpr std::uint32_t rotate(const std::uint32_t value, const unsigned by) {
+[[nodiscard]] constexpr std::uint32_t rotate(const std::uint32_t value,
+                                             const unsigned by) {
   return (value >> by) | (value << (32U - by));
 }
 
 void compress(std::array<std::uint32_t, 8>& state, const std::uint8_t* block) {
   std::array<std::uint32_t, 64> words{};
   for (std::size_t i = 0; i < 16; ++i) {
-    words[i] = (std::uint32_t{block[i * 4]} << 24U) | (std::uint32_t{block[i * 4 + 1]} << 16U) |
-               (std::uint32_t{block[i * 4 + 2]} << 8U) | std::uint32_t{block[i * 4 + 3]};
+    words[i] = (std::uint32_t{block[i * 4]} << 24U) |
+               (std::uint32_t{block[i * 4 + 1]} << 16U) |
+               (std::uint32_t{block[i * 4 + 2]} << 8U) |
+               std::uint32_t{block[i * 4 + 3]};
   }
   for (std::size_t i = 16; i < 64; ++i) {
     const std::uint32_t low =

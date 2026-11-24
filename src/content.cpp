@@ -48,7 +48,8 @@ AudioContent audio(const std::span<const std::byte> bytes, std::string mime_type
   return {.data = base64(bytes), .mime_type = std::move(mime_type)};
 }
 
-ResourceContents text_resource(std::string uri, std::string text, std::string mime_type) {
+ResourceContents text_resource(std::string uri, std::string text,
+                               std::string mime_type) {
   return {.uri = std::move(uri),
           .mime_type = std::move(mime_type),
           .text = std::move(text),

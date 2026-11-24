@@ -12,8 +12,8 @@
 #include <mcp/context.hpp>
 #include <meta>
 #include <optional>
-#include <span>
 #include <scrydantic/scrydantic.hpp>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -48,7 +48,8 @@ struct BoundResource {
   /// Reads the resource at `uri`, which matched. `variables` is an object that
   /// holds the text of each of the template's variables, or is empty.
   std::function<Result<std::vector<ResourceContents>>(
-      const Context& context, std::string_view uri, const scrydantic::JsonView& variables)>
+      const Context& context, std::string_view uri,
+      const scrydantic::JsonView& variables)>
       read{};
 };
 
@@ -75,8 +76,8 @@ struct BoundPrompt {
 
 /// Matches a URI against a template of mcp::resource. On a match, returns the
 /// variables as a JSON object of their decoded text.
-[[nodiscard]] std::optional<std::string> match_uri_template(std::string_view uri_template,
-                                                            std::string_view uri);
+[[nodiscard]] std::optional<std::string>
+match_uri_template(std::string_view uri_template, std::string_view uri);
 
 namespace detail {
 
@@ -113,8 +114,9 @@ consteval template_variables variables_of(const std::string_view uri) {
     bool plain = first < end;
     for (std::size_t c = first; c < end; ++c) {
       const char letter = uri[c];
-      plain = plain && ((letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z') ||
-                        (letter >= '0' && letter <= '9') || letter == '_');
+      plain = plain &&
+              ((letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z') ||
+               (letter >= '0' && letter <= '9') || letter == '_');
     }
     if (!plain) {
       found.problem = "a URI template variable must be {name} or {+name}";
@@ -135,7 +137,8 @@ consteval bool is_uri_template(const std::string_view uri) {
 }
 
 // Why a resource function's parameters do not fit its URI template, or empty.
-template <typename Arguments> consteval std::string_view resource_problem(std::string_view uri) {
+template <typename Arguments>
+consteval std::string_view resource_problem(std::string_view uri) {
   const template_variables variables = variables_of(uri);
   if (!variables.problem.empty()) {
     return variables.problem;
@@ -147,7 +150,8 @@ template <typename Arguments> consteval std::string_view resource_problem(std::s
     }
   }
   for (const scrydantic::FieldDescriptor& field : scrydantic::fields_v<Arguments>) {
-    if (field.required && std::ranges::find(variables.names, field.key) == variables.names.end()) {
+    if (field.required &&
+        std::ranges::find(variables.names, field.key) == variables.names.end()) {
       return "a parameter of the function is not a variable of its URI template";
     }
   }
@@ -158,20 +162,19 @@ template <typename Type> struct is_result : std::false_type {};
 template <typename Type>
 struct is_result<std::expected<Type, scrydantic::Error>> : std::true_type {};
 
-[[nodiscard]] std::vector<ResourceContents> contents_from(std::string_view uri,
-                                                          std::string_view mime_type,
-                                                          std::string text);
-[[nodiscard]] std::vector<ResourceContents> contents_from(std::string_view uri,
-                                                          std::string_view mime_type,
-                                                          const std::vector<std::byte>& bytes);
-[[nodiscard]] std::vector<ResourceContents> contents_from(std::string_view uri,
-                                                          std::vector<ResourceContents> contents);
+[[nodiscard]] std::vector<ResourceContents>
+contents_from(std::string_view uri, std::string_view mime_type, std::string text);
+[[nodiscard]] std::vector<ResourceContents>
+contents_from(std::string_view uri, std::string_view mime_type,
+              const std::vector<std::byte>& bytes);
+[[nodiscard]] std::vector<ResourceContents>
+contents_from(std::string_view uri, std::vector<ResourceContents> contents);
 
 // What a resource holds, from what its function returned.
 template <typename Value>
-Result<std::vector<ResourceContents>> resource_contents(const std::string_view uri,
-                                                        const std::string_view mime_type,
-                                                        Value&& value) {
+Result<std::vector<ResourceContents>>
+resource_contents(const std::string_view uri, const std::string_view mime_type,
+                  Value&& value) {
   using Type = std::remove_cvref_t<Value>;
   if constexpr (is_result<Type>::value) {
     if (!value) {
@@ -183,7 +186,8 @@ Result<std::vector<ResourceContents>> resource_contents(const std::string_view u
   } else if constexpr (std::is_same_v<Type, std::vector<std::byte>>) {
     return contents_from(uri, mime_type, value);
   } else if constexpr (std::is_same_v<Type, ResourceContents>) {
-    return contents_from(uri, std::vector<ResourceContents>{std::forward<Value>(value)});
+    return contents_from(uri,
+                         std::vector<ResourceContents>{std::forward<Value>(value)});
   } else if constexpr (std::is_same_v<Type, std::vector<ResourceContents>>) {
     return contents_from(uri, std::forward<Value>(value));
   } else {
@@ -197,7 +201,8 @@ Result<std::vector<ResourceContents>> resource_contents(const std::string_view u
 }
 
 // A prompt's messages, from what its function returned.
-template <typename Value> Result<std::vector<PromptMessage>> prompt_messages(Value&& value) {
+template <typename Value>
+Result<std::vector<PromptMessage>> prompt_messages(Value&& value) {
   using Type = std::remove_cvref_t<Value>;
   if constexpr (is_result<Type>::value) {
     if (!value) {
@@ -218,19 +223,22 @@ template <typename Value> Result<std::vector<PromptMessage>> prompt_messages(Val
     }
     return messages;
   } else {
-    static_assert(std::is_constructible_v<ContentBlock, Type>,
-                  "a prompt returns a std::string, an mcp::ContentBlock, mcp::Content, an "
-                  "mcp::PromptMessage, a vector of them, or a Result of one of these");
+    static_assert(
+        std::is_constructible_v<ContentBlock, Type>,
+        "a prompt returns a std::string, an mcp::ContentBlock, mcp::Content, an "
+        "mcp::PromptMessage, a vector of them, or a Result of one of these");
     return std::vector<PromptMessage>{
         {.role = Role::user, .content = ContentBlock{std::forward<Value>(value)}}};
   }
 }
 
-consteval std::string_view name_or(const std::string_view given, const std::meta::info function) {
+consteval std::string_view name_or(const std::string_view given,
+                                   const std::meta::info function) {
   return given.empty() ? std::meta::identifier_of(function) : given;
 }
 
-template <typename Annotation> consteval Annotation annotation_of(const std::meta::info function) {
+template <typename Annotation>
+consteval Annotation annotation_of(const std::meta::info function) {
   return std::meta::extract<Annotation>(
       std::meta::annotations_of_with_type(function, ^^Annotation)[0]);
 }
@@ -253,13 +261,15 @@ template <std::meta::info Function, typename Binding> BoundResource bind_resourc
       .description = std::string{annotation.description.view()},
       .mime_type = std::string{annotation.mime_type.view()},
       .read = [](const Context& context, const std::string_view uri,
-                 const scrydantic::JsonView& variables) -> Result<std::vector<ResourceContents>> {
-        Result<Arguments> arguments = scrydantic::decode<Arguments>(variables, from_text);
+                 const scrydantic::JsonView& variables)
+          -> Result<std::vector<ResourceContents>> {
+        Result<Arguments> arguments =
+            scrydantic::decode<Arguments>(variables, from_text);
         if (!arguments) {
           return std::unexpected(std::move(arguments).error());
         }
-        auto called =
-            scrydantic::try_apply<Function, Context, Binding>(context, std::move(*arguments));
+        auto called = scrydantic::try_apply<Function, Context, Binding>(
+            context, std::move(*arguments));
         if (!called) {
           return std::unexpected(std::move(called).error());
         }
@@ -293,14 +303,14 @@ template <std::meta::info Function, typename Binding> BoundPrompt bind_prompt() 
       .title = std::string{annotation.title.view()},
       .description = std::string{annotation.description.view()},
       .arguments = {},
-      .get = [](const Context& context,
-                const scrydantic::JsonView& arguments) -> Result<std::vector<PromptMessage>> {
+      .get = [](const Context& context, const scrydantic::JsonView& arguments)
+          -> Result<std::vector<PromptMessage>> {
         Result<Arguments> decoded = scrydantic::decode<Arguments>(arguments, from_text);
         if (!decoded) {
           return std::unexpected(std::move(decoded).error());
         }
-        auto called =
-            scrydantic::try_apply<Function, Context, Binding>(context, std::move(*decoded));
+        auto called = scrydantic::try_apply<Function, Context, Binding>(
+            context, std::move(*decoded));
         if (!called) {
           return std::unexpected(std::move(called).error());
         }
@@ -310,7 +320,8 @@ template <std::meta::info Function, typename Binding> BoundPrompt bind_prompt() 
   static constexpr std::span<const std::size_t> order =
       std::define_static_array(declaration_order<Arguments>());
   for (const std::size_t position : order) {
-    const scrydantic::FieldDescriptor& field = scrydantic::fields_v<Arguments>[position];
+    const scrydantic::FieldDescriptor& field =
+        scrydantic::fields_v<Arguments>[position];
     bound.arguments.push_back({.name = std::string{field.key},
                                .description = std::string{field.description},
                                .required = field.required});
@@ -343,19 +354,22 @@ consteval std::meta::info entries_of(const std::meta::info entity,
   std::vector<std::meta::info> found;
   for (const std::meta::info function : marked(entity, annotation)) {
     found.push_back(std::meta::substitute(
-        ^^entry, {std::meta::reflect_constant(function),
-                  scrydantic::binding_of(function, ^^Context)}));
+        ^^entry, {
+                     std::meta::reflect_constant(function),
+                     scrydantic::binding_of(function, ^^Context)}));
   }
   return std::meta::substitute(^^entries, found);
 }
 
 template <std::meta::info... Functions, typename... Bindings>
-std::vector<BoundResource> bind_resources(entries<entry<Functions, Bindings>...> /*unused*/) {
+std::vector<BoundResource>
+bind_resources(entries<entry<Functions, Bindings>...> /*unused*/) {
   return {bind_resource<Functions, Bindings>()...};
 }
 
 template <std::meta::info... Functions, typename... Bindings>
-std::vector<BoundPrompt> bind_prompts(entries<entry<Functions, Bindings>...> /*unused*/) {
+std::vector<BoundPrompt>
+bind_prompts(entries<entry<Functions, Bindings>...> /*unused*/) {
   return {bind_prompt<Functions, Bindings>()...};
 }
 

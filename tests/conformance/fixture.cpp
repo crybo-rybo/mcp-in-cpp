@@ -25,9 +25,10 @@
 namespace conformance {
 
 // A 1x1 PNG and a short WAV, as the reference server has them.
-constexpr std::string_view png =
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
-constexpr std::string_view wav = "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF0YQIAAAA=";
+constexpr std::string_view png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQ"
+                                 "VR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+constexpr std::string_view wav =
+    "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAAB9AAACABAAZGF0YQIAAAA=";
 
 mcp::ImageContent image() {
   return {.data = std::string{png}, .mime_type = "image/png"};
@@ -47,12 +48,13 @@ mcp::ImageContent image() {
 
 [[= mcp::tool{"Tests embedded resource content response"}]] mcp::Content
     test_embedded_resource() {
-  return {mcp::EmbeddedResource{
-      mcp::text_resource("test://embedded-resource", "This is an embedded resource content.")}};
+  return {mcp::EmbeddedResource{mcp::text_resource(
+      "test://embedded-resource", "This is an embedded resource content.")}};
 }
 
-[[= mcp::tool{"Tests response with multiple content types (text, image, resource)"}]]
-mcp::Content test_multiple_content_types() {
+[[= mcp::tool{
+    "Tests response with multiple content types (text, image, resource)"}]] mcp::Content
+    test_multiple_content_types() {
   return {mcp::TextContent{"Multiple content types test:"}, image(),
           mcp::EmbeddedResource{mcp::text_resource("test://mixed-content-resource",
                                                    R"({"test":"data","value":123})",
@@ -92,9 +94,11 @@ mcp::Content test_multiple_content_types() {
 }
 
 // The answer to a form, as the reference server writes it.
-std::string answer_text(const std::string_view lead, const mcp::Answer<mcp::Json>& answer) {
+std::string answer_text(const std::string_view lead,
+                        const mcp::Answer<mcp::Json>& answer) {
   constexpr std::string_view actions[] = {"accept", "decline", "cancel"};
-  return std::string{lead} + "action=" + std::string{actions[static_cast<int>(answer.action)]} +
+  return std::string{lead} +
+         "action=" + std::string{actions[static_cast<int>(answer.action)]} +
          ", content=" + answer.content.value_or(mcp::Json{.text = "{}"}).text;
 }
 
@@ -108,16 +112,19 @@ std::string first_text(const mcp::Content& content) {
 }
 
 mcp::SamplingRequest ask_model(std::string text, const std::int64_t max_tokens) {
-  return {.messages = {{.role = mcp::Role::user, .content = mcp::TextContent{std::move(text)}}},
+  return {.messages = {{.role = mcp::Role::user,
+                        .content = mcp::TextContent{std::move(text)}}},
           .max_tokens = max_tokens};
 }
 
 // 2025-11-25: requests of the server's to the client.
 
 [[= mcp::tool{"Tests server-initiated sampling (LLM completion request)"}]] std::string
-    test_sampling([[= mcp::description{"The prompt to send to the LLM"}]] std::string prompt,
+    test_sampling([[= mcp::description{
+                      "The prompt to send to the LLM"}]] std::string prompt,
                   mcp::Sampling sampling) {
-  mcp::Result<mcp::SamplingResult> answer = sampling.create(ask_model(std::move(prompt), 100));
+  mcp::Result<mcp::SamplingResult> answer =
+      sampling.create(ask_model(std::move(prompt), 100));
   if (!answer) {
     return "Sampling not supported or error: " + answer.error().model_message;
   }
@@ -129,10 +136,11 @@ struct UserResponse {
 };
 
 [[= mcp::tool{"Tests server-initiated elicitation (user input request)"}]] std::string
-    test_elicitation([[= mcp::description{"The message to show the user"}]] std::string message,
+    test_elicitation([[= mcp::description{
+                         "The message to show the user"}]] std::string message,
                      mcp::Elicitation ask) {
-  mcp::Result<mcp::Answer<mcp::Json>> answer =
-      ask.form(message, mcp::Json{.text = std::string{scrydantic::schema_v<UserResponse>}});
+  mcp::Result<mcp::Answer<mcp::Json>> answer = ask.form(
+      message, mcp::Json{.text = std::string{scrydantic::schema_v<UserResponse>}});
   if (!answer) {
     return "Elicitation not supported or error: " + answer.error().model_message;
   }
@@ -162,7 +170,8 @@ struct Defaults {
 
 // Titled enumerations are spelled as JSON: Scrydantic writes an enumeration's
 // names, not titles for them.
-constexpr std::string_view enum_form = R"json({"properties":{)json"
+constexpr std::string_view enum_form =
+    R"json({"properties":{)json"
     R"json("legacyEnum":{"description":"Select one option (legacy)","enum":["opt1","opt2","opt3"],)json"
     R"json("enumNames":["Option One","Option Two","Option Three"],"type":"string"},)json"
     R"json("titledMulti":{"description":"Select multiple options with titles","items":{"anyOf":[)json"
@@ -176,10 +185,12 @@ constexpr std::string_view enum_form = R"json({"properties":{)json"
     R"json("untitledSingle":{"description":"Select one option","enum":["option1","option2","option3"],)json"
     R"json("type":"string"}},"required":[],"type":"object"})json";
 
-[[= mcp::tool{"Tests elicitation with enum schema improvements per SEP-1330"}]] std::string
+[[= mcp::tool{
+    "Tests elicitation with enum schema improvements per SEP-1330"}]] std::string
     test_elicitation_sep1330_enums(mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<mcp::Json>> answer =
-      ask.form("Please select options from the enum fields", mcp::Json{.text = std::string{enum_form}});
+      ask.form("Please select options from the enum fields",
+               mcp::Json{.text = std::string{enum_form}});
   if (!answer) {
     return "Elicitation not supported or error: " + answer.error().model_message;
   }
@@ -201,27 +212,32 @@ struct Name {
   std::string name;
 };
 
-[[= mcp::tool{"MRTR: returns InputRequiredResult with elicitation request"}]]
-mcp::Result<std::string> test_input_required_result_elicitation(mcp::Elicitation ask) {
-  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("What is your name?", "user_name");
+[[= mcp::tool{"MRTR: returns InputRequiredResult with elicitation request"}]] mcp::
+    Result<std::string>
+        test_input_required_result_elicitation(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Name>> name =
+      ask.form<Name>("What is your name?", "user_name");
   if (!name) {
     return std::unexpected(name.error());
   }
-  return "Hello, " + (name->content ? name->content->name : std::string{"friend"}) + "!";
+  return "Hello, " + (name->content ? name->content->name : std::string{"friend"}) +
+         "!";
 }
 
-[[= mcp::tool{"MRTR: returns InputRequiredResult with sampling request"}]]
-mcp::Result<std::string> test_input_required_result_sampling(mcp::Sampling sampling) {
-  mcp::Result<mcp::SamplingResult> answer =
-      sampling.create(ask_model("What is the capital of France?", 100), "sample_request");
+[[= mcp::tool{"MRTR: returns InputRequiredResult with sampling request"}]] mcp::Result<
+    std::string>
+    test_input_required_result_sampling(mcp::Sampling sampling) {
+  mcp::Result<mcp::SamplingResult> answer = sampling.create(
+      ask_model("What is the capital of France?", 100), "sample_request");
   if (!answer) {
     return std::unexpected(answer.error());
   }
   return "Sampling result: " + first_text(answer->content);
 }
 
-[[= mcp::tool{"MRTR: returns InputRequiredResult with roots/list request"}]]
-mcp::Result<std::string> test_input_required_result_list_roots(mcp::Roots roots) {
+[[= mcp::tool{"MRTR: returns InputRequiredResult with roots/list request"}]] mcp::
+    Result<std::string>
+        test_input_required_result_list_roots(mcp::Roots roots) {
   mcp::Result<std::vector<mcp::Root>> listed = roots.list("roots_request");
   if (!listed) {
     return std::unexpected(listed.error());
@@ -233,8 +249,9 @@ struct Confirmation {
   bool ok{};
 };
 
-[[= mcp::tool{"MRTR: returns InputRequiredResult with requestState"}]]
-mcp::Result<std::string> test_input_required_result_request_state(mcp::Elicitation ask) {
+[[= mcp::tool{
+    "MRTR: returns InputRequiredResult with requestState"}]] mcp::Result<std::string>
+    test_input_required_result_request_state(mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<Confirmation>> confirmed =
       ask.form<Confirmation>("Please confirm", "confirm");
   if (!confirmed) {
@@ -243,13 +260,15 @@ mcp::Result<std::string> test_input_required_result_request_state(mcp::Elicitati
   return std::string{"state-ok: requestState validated"};
 }
 
-[[= mcp::tool{"MRTR: returns InputRequiredResult with multiple input requests"}]]
-mcp::Result<std::string> test_input_required_result_multiple_inputs(mcp::Elicitation ask,
-                                                                    mcp::Sampling sampling,
-                                                                    mcp::Roots roots) {
+[[= mcp::tool{"MRTR: returns InputRequiredResult with multiple input requests"}]] mcp::
+    Result<std::string>
+        test_input_required_result_multiple_inputs(mcp::Elicitation ask,
+                                                   mcp::Sampling sampling,
+                                                   mcp::Roots roots) {
   // Every question is asked before any answer is looked at, so that one round
   // asks them all.
-  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("What is your name?", "user_name");
+  mcp::Result<mcp::Answer<Name>> name =
+      ask.form<Name>("What is your name?", "user_name");
   mcp::Result<mcp::SamplingResult> greeting =
       sampling.create(ask_model("Generate a greeting", 50), "greeting");
   mcp::Result<std::vector<mcp::Root>> listed = roots.list("client_roots");
@@ -271,9 +290,11 @@ struct Color {
   std::string color;
 };
 
-[[= mcp::tool{"MRTR: multi-round InputRequiredResult workflow"}]]
-mcp::Result<std::string> test_input_required_result_multi_round(mcp::Elicitation ask) {
-  mcp::Result<mcp::Answer<Name>> name = ask.form<Name>("Step 1: What is your name?", "step1");
+[[= mcp::tool{
+    "MRTR: multi-round InputRequiredResult workflow"}]] mcp::Result<std::string>
+    test_input_required_result_multi_round(mcp::Elicitation ask) {
+  mcp::Result<mcp::Answer<Name>> name =
+      ask.form<Name>("Step 1: What is your name?", "step1");
   if (!name) {
     return std::unexpected(name.error());
   }
@@ -287,8 +308,9 @@ mcp::Result<std::string> test_input_required_result_multi_round(mcp::Elicitation
          (color->content ? color->content->color : std::string{"nothing"});
 }
 
-[[= mcp::tool{"MRTR: verifies the integrity of its requestState"}]]
-mcp::Result<std::string> test_input_required_result_tampered_state(mcp::Elicitation ask) {
+[[= mcp::tool{
+    "MRTR: verifies the integrity of its requestState"}]] mcp::Result<std::string>
+    test_input_required_result_tampered_state(mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<Confirmation>> confirmed =
       ask.form<Confirmation>("Please confirm", "confirm");
   if (!confirmed) {
@@ -301,13 +323,15 @@ struct Value {
   std::string value;
 };
 
-[[= mcp::tool{"MRTR: requests only the inputs the client's capabilities allow"}]]
-mcp::Result<std::string> test_input_required_result_capabilities(mcp::Elicitation ask,
-                                                                 mcp::Sampling sampling) {
+[[= mcp::tool{"MRTR: requests only the inputs the client's capabilities allow"}]] mcp::
+    Result<std::string>
+        test_input_required_result_capabilities(mcp::Elicitation ask,
+                                                mcp::Sampling sampling) {
   std::vector<std::string> received;
   std::optional<mcp::Error> pending;
   if (ask) {
-    mcp::Result<mcp::Answer<Value>> value = ask.form<Value>("Elicitation input", "elicit_input");
+    mcp::Result<mcp::Answer<Value>> value =
+        ask.form<Value>("Elicitation input", "elicit_input");
     if (value) {
       received.emplace_back("elicit_input");
     } else {
@@ -346,8 +370,9 @@ struct Context {
   std::string context;
 };
 
-[[= mcp::prompt{"MRTR: prompt that requires elicitation input"}]]
-mcp::Result<std::string> test_input_required_result_prompt(mcp::Elicitation ask) {
+[[= mcp::prompt{
+    "MRTR: prompt that requires elicitation input"}]] mcp::Result<std::string>
+    test_input_required_result_prompt(mcp::Elicitation ask) {
   mcp::Result<mcp::Answer<Context>> context =
       ask.form<Context>("What context should the prompt use?", "user_context");
   if (!context) {
@@ -361,8 +386,7 @@ mcp::Result<std::string> test_input_required_result_prompt(mcp::Elicitation ask)
                   .description = "A static text resource for testing",
                   .mime_type = "text/plain",
                   .name = "static-text",
-                  .title = "Static Text Resource"}]]
-std::string static_text() {
+                  .title = "Static Text Resource"}]] std::string static_text() {
   return "This is the content of the static text resource.";
 }
 
@@ -370,8 +394,8 @@ std::string static_text() {
                   .description = "A static binary resource (image) for testing",
                   .mime_type = "image/png",
                   .name = "static-binary",
-                  .title = "Static Binary Resource"}]]
-mcp::ResourceContents static_binary() {
+                  .title = "Static Binary Resource"}]] mcp::ResourceContents
+    static_binary() {
   return {.uri = "test://static-binary",
           .mime_type = "image/png",
           .text = std::nullopt,
@@ -388,8 +412,8 @@ struct TemplateData {
                   .description = "A resource template with parameter substitution",
                   .mime_type = "application/json",
                   .name = "template",
-                  .title = "Resource Template"}]]
-TemplateData template_data(std::string id) {
+                  .title = "Resource Template"}]] TemplateData
+    template_data(std::string id) {
   return {.id = id, .templateTest = true, .data = "Data for ID: " + id};
 }
 
@@ -397,38 +421,36 @@ TemplateData template_data(std::string id) {
                   .description = "A resource that auto-updates every 3 seconds",
                   .mime_type = "text/plain",
                   .name = "watched-resource",
-                  .title = "Watched Resource"}]]
-std::string watched_resource() {
+                  .title = "Watched Resource"}]] std::string watched_resource() {
   return "Watched resource content";
 }
 
 [[= mcp::prompt{.description = "A simple prompt without arguments",
-                .title = "Simple Test Prompt"}]]
-std::string test_simple_prompt() {
+                .title = "Simple Test Prompt"}]] std::string test_simple_prompt() {
   return "This is a simple prompt for testing.";
 }
 
 [[= mcp::prompt{.description = "A prompt with required arguments",
-                .title = "Prompt With Arguments"}]]
-std::string test_prompt_with_arguments(
-    [[= mcp::description{"First test argument"}]] std::string arg1,
-    [[= mcp::description{"Second test argument"}]] std::string arg2) {
+                .title = "Prompt With Arguments"}]] std::string
+    test_prompt_with_arguments(
+        [[= mcp::description{"First test argument"}]] std::string arg1,
+        [[= mcp::description{"Second test argument"}]] std::string arg2) {
   return "Prompt with arguments: arg1='" + arg1 + "', arg2='" + arg2 + "'";
 }
 
 [[= mcp::prompt{.description = "A prompt that includes an embedded resource",
-                .title = "Prompt With Embedded Resource"}]]
-mcp::Content test_prompt_with_embedded_resource(
-    [[= mcp::name{"resourceUri"}, = mcp::description{"URI of the resource to embed"}]]
-    std::string resource_uri) {
-  return {mcp::EmbeddedResource{
-              mcp::text_resource(resource_uri, "Embedded resource content for testing.")},
+                .title = "Prompt With Embedded Resource"}]] mcp::Content
+    test_prompt_with_embedded_resource([[
+      = mcp::name{"resourceUri"},
+      = mcp::description{"URI of the resource to embed"}
+    ]] std::string resource_uri) {
+  return {mcp::EmbeddedResource{mcp::text_resource(
+              resource_uri, "Embedded resource content for testing.")},
           mcp::TextContent{"Please process the embedded resource above."}};
 }
 
 [[= mcp::prompt{.description = "A prompt that includes image content",
-                .title = "Prompt With Image"}]]
-mcp::Content test_prompt_with_image() {
+                .title = "Prompt With Image"}]] mcp::Content test_prompt_with_image() {
   return {image(), mcp::TextContent{"Please analyze the image above."}};
 }
 
@@ -438,7 +460,8 @@ int main(const int argc, const char* const argv[]) {
   int port = 3000;
   if (argc > 1) {
     const std::string_view text{argv[1]};
-    if (std::from_chars(text.data(), text.data() + text.size(), port).ec != std::errc{}) {
+    if (std::from_chars(text.data(), text.data() + text.size(), port).ec !=
+        std::errc{}) {
       std::cerr << "usage: mcp_conformance_fixture [PORT]\n";
       return 2;
     }

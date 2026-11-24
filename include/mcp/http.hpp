@@ -12,8 +12,8 @@
 
 #include <chrono>
 #include <cstddef>
-#include <memory>
 #include <mcp/server.hpp>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
