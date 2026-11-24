@@ -44,8 +44,10 @@ the reference for them and for what a tool may take and return.
 
 ## Status
 
-This is the first slice: a tool server over stdio. It is early, and the API can
-change.
+A complete server of both protocol eras, over stdio and Streamable HTTP. It
+passes every scored scenario of the official
+[conformance suite](https://github.com/modelcontextprotocol/conformance) for
+2026-07-28 and for 2025-11-25. It is young, and its API can change before 1.0.
 
 | | |
 |---|---|
