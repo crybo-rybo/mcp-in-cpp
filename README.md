@@ -1,9 +1,10 @@
 # mcp-in-cpp
 
-An MCP server library for C++26. A tool is a plain function: static reflection
-reads its parameters into the input schema, its return type into the output
-schema, and its annotations into the descriptions a model sees. There are no
-macros, no code generator, and no schema written by hand.
+An MCP server library for C++26. A tool, a resource, and a prompt are each a
+plain function: static reflection reads a tool's parameters into the input
+schema, its return type into the output schema, and its annotations into the
+descriptions a model sees. There are no macros, no code generator, and no
+schema written by hand.
 
 ```cpp
 #include <mcp/mcp.hpp>
@@ -18,6 +19,12 @@ struct Forecast {
 [[= mcp::tool{"Get the forecast for a city"}]]
 Forecast forecast([[= mcp::description{"City name"}]] std::string city,
                   [[= mcp::range{.min = 1, .max = 7}]] std::int32_t days = 1);
+
+[[= mcp::resource{.uri = "weather://{city}/alerts", .mime_type = "application/json"}]]
+std::vector<Alert> alerts(std::string city);
+
+[[= mcp::prompt{"Plan a trip around the weather"}]]
+std::string plan_trip(std::string city, std::int32_t days = 3);
 
 }  // namespace weather
 
@@ -43,7 +50,9 @@ change.
 | | |
 |---|---|
 | Protocol | MCP 2026-07-28, served statelessly, and the `initialize` handshake of 2025-11-25 and 2025-06-18. One server speaks both to whichever client connects. |
-| Methods | `server/discover`, `tools/list`, `tools/call`, `subscriptions/listen` (acknowledged; a server's tools do not change while it runs), and for a handshake session `initialize` and `ping`. |
+| Methods | `server/discover`, `tools/list`, `tools/call`, `resources/list`, `resources/templates/list`, `resources/read`, `prompts/list`, `prompts/get`, `completion/complete` (which suggests nothing yet), `subscriptions/listen` (acknowledged; what a server offers does not change while it runs), and for a handshake session `initialize` and `ping`. A method of a capability the server lacks is not found. |
+| Resources | A function marked `mcp::resource{.uri = ...}`. A URI with `{name}` or `{+name}` is a template whose variables are the parameters, read from text as their types. A string is the resource's text, bytes its blob, and any other value its JSON. A resource that is not there is `-32602` under 2026-07-28 and `-32002` before. |
+| Prompts | A function marked `mcp::prompt{"..."}`. Its parameters are the arguments, in order, read from text as their types; a default makes one optional. It returns a string, content blocks, or `mcp::PromptMessage`s. |
 | Tool results | Text content, and structured content with the tool's output schema. A returned string is sent as the text itself. A tool that returns `mcp::Content` sends its blocks as they are: text, images, audio, embedded resources, and resource links. |
 | Tool failures | Arguments that do not decode and a tool's own refusal are tool errors with the text meant for the model. A tool that throws, or whose result breaks its own schema, is a tool error that says only `the tool failed`; the reason goes to the server's log. An unknown tool or a malformed call is a JSON-RPC error. |
 | Progress | A tool takes an `mcp::Progress` parameter in any position. It is not in the input schema, and its reports reach a client that sent a progress token. |
@@ -52,7 +61,7 @@ change.
 | Transport | stdio: `mcp::serve_stdio`. Streamable HTTP: `mcp::HttpEndpoint`, behind an HTTP server the program already has; `<mcp/httplib.hpp>` mounts it on cpp-httplib. `mcp::Connection::handle` takes one message and returns the response, and may be called from several threads, for a transport of your own. |
 | HTTP | 2026-07-28 statelessly, with its routing headers checked (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) and a closed stream as cancellation. The handshake revisions in sessions named by `Mcp-Session-Id`, cancelled by notification. A response is JSON, or an event stream once the call sends a notification. `Host` and `Origin` are checked against the local machine's names by default. |
 
-Not there yet: resources, prompts, elicitation, authorization, and a client.
+Not there yet: elicitation, logging, sampling, authorization, and a client.
 
 ## Requirements
 

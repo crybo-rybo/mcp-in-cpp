@@ -59,6 +59,34 @@ struct Forecast {
   return "archive of " + city + " is ready";
 }
 
+struct Alert {
+  std::string kind;
+  [[= mcp::description{"Hours from now"}]] std::int32_t in_hours{};
+};
+
+// A resource template: `{city}` is the parameter of the same name.
+[[= mcp::resource{.uri = "weather://{city}/alerts",
+                  .description = "Storm alerts for a city",
+                  .mime_type = "application/json"}]]
+mcp::Result<std::vector<Alert>> alerts(std::string city) {
+  if (city != "Lima" && city != "Oslo") {
+    return std::unexpected(mcp::tool_error("no alerts are kept for " + city));
+  }
+  return std::vector<Alert>{{.kind = city == "Oslo" ? "snow" : "fog", .in_hours = 6}};
+}
+
+[[= mcp::resource{.uri = "weather://about", .description = "Where the forecasts come from"}]]
+std::string about() {
+  return "Forecasts are made up for the example.";
+}
+
+[[= mcp::prompt{"Plan a trip around the weather"}]] std::string
+    plan_trip([[= mcp::description{"Where to go"}]] std::string city,
+              [[= mcp::range{.min = 1, .max = 7}]] std::int32_t days = 3) {
+  return "Plan " + std::to_string(days) + " days in " + city +
+         ". Read the forecast first, and its alerts.";
+}
+
 [[= mcp::tool{"Watch a city for storm warnings for a number of seconds"}]] std::string
     watch(std::string city, [[= mcp::range{.min = 0, .max = 60}]] std::int32_t seconds,
           std::stop_token stop) {

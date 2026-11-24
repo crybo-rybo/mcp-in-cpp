@@ -195,6 +195,133 @@ Server& Server::add_bound(std::vector<scrydantic::BoundTool<Context>> tools,
   return *this;
 }
 
+Server& Server::add(std::vector<BoundResource> resources) {
+  if (problem_.has_value()) {
+    return *this;
+  }
+  for (BoundResource& resource : resources) {
+    const bool taken = std::ranges::any_of(
+        resources_, [&](const BoundResource& other) { return other.uri == resource.uri; });
+    if (taken || !resource.read) {
+      problem_ = scrydantic::Error{};
+      problem_->message = taken ? join({"two resources have the URI \"", resource.uri, "\""})
+                                : join({"resource \"", resource.uri, "\" has no handler"});
+      return *this;
+    }
+    resources_.push_back(std::move(resource));
+  }
+  write_resource_lists();
+  return *this;
+}
+
+Server& Server::add(std::vector<BoundPrompt> prompts) {
+  if (problem_.has_value()) {
+    return *this;
+  }
+  for (BoundPrompt& prompt : prompts) {
+    const bool taken = std::ranges::find(prompts_, prompt.name, &BoundPrompt::name) !=
+                       prompts_.end();
+    if (taken || !prompt.get) {
+      problem_ = scrydantic::Error{};
+      problem_->message = taken ? join({"two prompts are named \"", prompt.name, "\""})
+                                : join({"prompt \"", prompt.name, "\" has no handler"});
+      return *this;
+    }
+    prompts_.push_back(std::move(prompt));
+  }
+  write_prompt_list();
+  return *this;
+}
+
+void Server::write_resource_lists() {
+  std::vector<wire::Resource> fixed;
+  std::vector<wire::Resource> templates;
+  const auto optional_text = [](const std::string& text) {
+    return text.empty() ? std::nullopt : std::optional<std::string>{text};
+  };
+  for (const BoundResource& resource : resources_) {
+    wire::Resource entry{.uri = std::nullopt,
+                         .uri_template = std::nullopt,
+                         .name = resource.name,
+                         .title = optional_text(resource.title),
+                         .description = optional_text(resource.description),
+                         .mime_type = optional_text(resource.mime_type)};
+    if (resource.is_template) {
+      entry.uri_template = resource.uri;
+      templates.push_back(std::move(entry));
+    } else {
+      entry.uri = resource.uri;
+      fixed.push_back(std::move(entry));
+    }
+  }
+  scrydantic::Result<Json> fixed_text = scrydantic::encode_verbatim(fixed);
+  scrydantic::Result<Json> template_text = scrydantic::encode_verbatim(templates);
+  if (!fixed_text || !template_text) {
+    problem_ = fixed_text ? template_text.error() : fixed_text.error();
+    return;
+  }
+  resource_list_ = std::move(fixed_text->text);
+  template_list_ = std::move(template_text->text);
+}
+
+void Server::write_prompt_list() {
+  std::vector<wire::Prompt> list;
+  for (const BoundPrompt& prompt : prompts_) {
+    wire::Prompt entry{.name = prompt.name,
+                       .title = std::nullopt,
+                       .description = std::nullopt,
+                       .arguments = {}};
+    if (!prompt.title.empty()) {
+      entry.title = prompt.title;
+    }
+    if (!prompt.description.empty()) {
+      entry.description = prompt.description;
+    }
+    for (const PromptArgument& argument : prompt.arguments) {
+      entry.arguments.push_back(
+          {.name = argument.name,
+           .description = argument.description.empty()
+                              ? std::nullopt
+                              : std::optional<std::string>{argument.description},
+           .required = argument.required});
+    }
+    list.push_back(std::move(entry));
+  }
+  scrydantic::Result<Json> text = scrydantic::encode_verbatim(list);
+  if (!text) {
+    problem_ = text.error();
+    return;
+  }
+  prompt_list_ = std::move(text->text);
+}
+
+bool Server::completes() const noexcept {
+  return !prompts_.empty() ||
+         std::ranges::any_of(resources_, &BoundResource::is_template);
+}
+
+wire::ServerCapabilities Server::capabilities() const {
+  wire::ServerCapabilities capabilities{};
+  if (completes()) {
+    capabilities.completions = wire::CompletionsCapability{};
+  }
+  if (!prompts_.empty()) {
+    capabilities.prompts = wire::PromptsCapability{};
+  }
+  if (!resources_.empty()) {
+    capabilities.resources = wire::ResourcesCapability{};
+  }
+  // A server with nothing else still says that it has tools, if none yet.
+  if (!tools_.tools().empty() || (resources_.empty() && prompts_.empty())) {
+    capabilities.tools = wire::ToolsCapability{};
+  }
+  return capabilities;
+}
+
+wire::ResultMeta Server::result_meta() const {
+  return {.server_info = {.name = name_, .version = version_}};
+}
+
 Status Server::status() const {
   if (problem_.has_value()) {
     return std::unexpected(*problem_);
@@ -395,6 +522,9 @@ std::optional<std::string> Connection::dispatch(Request& request,
     if (request.method == "subscriptions/listen") {
       return listen(request, notify);
     }
+    if (const std::optional<std::string> served = serve_feature(request, notify)) {
+      return served;
+    }
     return request.error(wire::method_not_found,
                          join({"Method not found: ", request.method}));
   }
@@ -416,8 +546,43 @@ std::optional<std::string> Connection::dispatch(Request& request,
   if (request.method == "tools/call") {
     return call_tool(request, notify);
   }
+  if (const std::optional<std::string> served = serve_feature(request, notify)) {
+    return served;
+  }
   return request.error(wire::method_not_found,
                        join({"Method not found: ", request.method}));
+}
+
+std::optional<std::string> Connection::serve_feature(const Request& request,
+                                                     const Notify& notify) const {
+  // A method of a capability the server lacks is not found.
+  const bool resources = !server_->resources_.empty();
+  const bool prompts = !server_->prompts_.empty();
+  if (!resources && request.method.starts_with("resources/")) {
+    return std::nullopt;
+  }
+  if (!prompts && request.method.starts_with("prompts/")) {
+    return std::nullopt;
+  }
+  if (request.method == "resources/list") {
+    return list_resources(request, false);
+  }
+  if (request.method == "resources/templates/list") {
+    return list_resources(request, true);
+  }
+  if (request.method == "resources/read") {
+    return read_resource(request, notify);
+  }
+  if (request.method == "prompts/list") {
+    return list_prompts(request);
+  }
+  if (request.method == "prompts/get") {
+    return get_prompt(request, notify);
+  }
+  if (request.method == "completion/complete" && server_->completes()) {
+    return complete(request);
+  }
+  return std::nullopt;
 }
 
 std::string Connection::initialize(const Request& request) {
@@ -435,7 +600,7 @@ std::string Connection::initialize(const Request& request) {
       known != nullptr ? *known : legacy_protocol_versions[0];
   const std::optional<std::string> result = encoded(wire::InitializeResult{
       .protocol_version = std::string{chosen},
-      .capabilities = {.tools = wire::ToolsCapability{}},
+      .capabilities = server_->capabilities(),
       .server_info = {.name = server_->name_, .version = server_->version_},
       .instructions = server_->instructions_,
   });
@@ -460,7 +625,7 @@ std::string Connection::discover(const Request& request) const {
       .meta = {.server_info = {.name = server_->name_, .version = server_->version_}},
       .result_type = "complete",
       .supported_versions = supported_versions(),
-      .capabilities = {.tools = wire::ToolsCapability{}},
+      .capabilities = server_->capabilities(),
       .instructions = server_->instructions_,
       .ttl_ms = server_->list_ttl_.count(),
       .cache_scope = wire::CacheScope::public_,
@@ -512,18 +677,7 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
   }
 
   Progress::State progress{};
-  Context context{.protocol_version =
-                      request.modern ? modern_protocol_version : legacy_version(),
-                  .progress = {},
-                  .stop = request.stop};
-  const std::optional<JsonView> meta = request.param("_meta");
-  const std::optional<JsonView> token =
-      is_object(meta) ? meta->find("progressToken") : std::nullopt;
-  if (notify && token.has_value() && is_request_id(*token)) {
-    progress.notify = &notify;
-    progress.token = token->to_json().text;
-    context.progress = Progress{&progress};
-  }
+  const Context context = context_of(request, progress, notify);
 
   wire::CallToolResult reply{};
   if (request.modern) {
@@ -590,6 +744,256 @@ std::string Connection::call_tool(const Request& request, const Notify& notify) 
     text = encoded(reply);
   }
   return text.has_value() ? request.result(*text) : request.internal_error();
+}
+
+Context Connection::context_of(const Request& request, Progress::State& progress,
+                               const Notify& notify) const {
+  Context context{.protocol_version =
+                      request.modern ? modern_protocol_version : legacy_version(),
+                  .progress = {},
+                  .stop = request.stop};
+  const std::optional<JsonView> meta = request.param("_meta");
+  const std::optional<JsonView> token =
+      is_object(meta) ? meta->find("progressToken") : std::nullopt;
+  if (notify && token.has_value() && is_request_id(*token)) {
+    progress.notify = &notify;
+    progress.token = token->to_json().text;
+    context.progress = Progress{&progress};
+  }
+  return context;
+}
+
+std::string Connection::list_resources(const Request& request, const bool templates) const {
+  if (request.param("cursor").has_value()) {
+    return request.error(wire::invalid_params, "Invalid params: unknown cursor");
+  }
+  std::optional<wire::ResultMeta> meta;
+  std::optional<std::string> result_type;
+  std::optional<std::int64_t> ttl;
+  std::optional<wire::CacheScope> scope;
+  if (request.modern) {
+    meta = server_->result_meta();
+    result_type = "complete";
+    ttl = server_->list_ttl_.count();
+    scope = wire::CacheScope::public_;
+  }
+  const std::optional<std::string> result =
+      templates ? encoded(wire::ListResourceTemplatesResult{
+                      .meta = std::move(meta),
+                      .result_type = std::move(result_type),
+                      .resource_templates = Json{.text = server_->template_list_},
+                      .ttl_ms = ttl,
+                      .cache_scope = scope,
+                  })
+                : encoded(wire::ListResourcesResult{
+                      .meta = std::move(meta),
+                      .result_type = std::move(result_type),
+                      .resources = Json{.text = server_->resource_list_},
+                      .ttl_ms = ttl,
+                      .cache_scope = scope,
+                  });
+  return result.has_value() ? request.result(*result) : request.internal_error();
+}
+
+std::string Connection::read_resource(const Request& request, const Notify& notify) const {
+  const std::optional<JsonView> uri_value = request.param("uri");
+  const std::optional<std::string_view> uri =
+      uri_value.has_value() ? uri_value->string() : std::nullopt;
+  if (!uri.has_value()) {
+    return request.error(wire::invalid_params, "Invalid params: uri must be a string");
+  }
+  // Under 2026-07-28 a resource that is not there is invalid params; before
+  // it, the revisions gave it a code of its own.
+  const auto not_found = [&](const std::string_view message) {
+    const std::optional<std::string> data =
+        encoded(wire::ResourceNotFoundData{.uri = std::string{*uri}});
+    return request.error(request.modern ? wire::invalid_params : wire::resource_not_found,
+                         message, data.value_or(std::string{}));
+  };
+
+  const BoundResource* found = nullptr;
+  std::string variables{"{}"};
+  for (const BoundResource& resource : server_->resources_) {
+    if (!resource.is_template && resource.uri == *uri) {
+      found = &resource;
+      break;
+    }
+  }
+  if (found == nullptr) {
+    for (const BoundResource& resource : server_->resources_) {
+      if (!resource.is_template) {
+        continue;
+      }
+      if (std::optional<std::string> matched = match_uri_template(resource.uri, *uri)) {
+        found = &resource;
+        variables = std::move(*matched);
+        break;
+      }
+    }
+  }
+  if (found == nullptr) {
+    return not_found("Resource not found");
+  }
+
+  const scrydantic::Result<JsonView> parsed = JsonView::parse(variables);
+  if (!parsed) {
+    return request.internal_error();
+  }
+  Progress::State progress{};
+  const Context context = context_of(request, progress, notify);
+  scrydantic::Result<std::vector<ResourceContents>> contents;
+  try {
+    contents = found->read(context, *uri, *parsed);
+  } catch (const std::exception& thrown) {
+    server_->log_line(join({"resource ", found->uri, " threw: ", thrown.what()}));
+    return request.internal_error();
+  } catch (...) {
+    server_->log_line(join({"resource ", found->uri, " threw an unknown exception"}));
+    return request.internal_error();
+  }
+  if (!contents) {
+    if (!contents.error().model_message.empty()) {
+      // The variables do not fit the parameters, or the function refused.
+      return not_found(contents.error().model_message);
+    }
+    server_->log_line(join({"resource ", found->uri, " failed: ", contents.error().message}));
+    return request.internal_error();
+  }
+
+  wire::ReadResourceResult reply{.meta = std::nullopt,
+                                 .result_type = std::nullopt,
+                                 .contents = std::move(*contents),
+                                 .ttl_ms = std::nullopt,
+                                 .cache_scope = std::nullopt};
+  if (request.modern) {
+    reply.meta = server_->result_meta();
+    reply.result_type = "complete";
+    reply.ttl_ms = server_->list_ttl_.count();
+    reply.cache_scope = wire::CacheScope::public_;
+  }
+  const std::optional<std::string> result = encoded(reply);
+  if (!result.has_value()) {
+    server_->log_line(join({"resource ", found->uri, " holds text that is not UTF-8"}));
+    return request.internal_error();
+  }
+  return request.result(*result);
+}
+
+std::string Connection::list_prompts(const Request& request) const {
+  if (request.param("cursor").has_value()) {
+    return request.error(wire::invalid_params, "Invalid params: unknown cursor");
+  }
+  wire::ListPromptsResult reply{.meta = std::nullopt,
+                                .result_type = std::nullopt,
+                                .prompts = Json{.text = server_->prompt_list_},
+                                .ttl_ms = std::nullopt,
+                                .cache_scope = std::nullopt};
+  if (request.modern) {
+    reply.meta = server_->result_meta();
+    reply.result_type = "complete";
+    reply.ttl_ms = server_->list_ttl_.count();
+    reply.cache_scope = wire::CacheScope::public_;
+  }
+  const std::optional<std::string> result = encoded(reply);
+  return result.has_value() ? request.result(*result) : request.internal_error();
+}
+
+std::string Connection::get_prompt(const Request& request, const Notify& notify) const {
+  const std::optional<JsonView> name_value = request.param("name");
+  const std::optional<std::string_view> name =
+      name_value.has_value() ? name_value->string() : std::nullopt;
+  if (!name.has_value()) {
+    return request.error(wire::invalid_params, "Invalid params: name must be a string");
+  }
+  const auto found = std::ranges::find(server_->prompts_, *name, &BoundPrompt::name);
+  if (found == server_->prompts_.end()) {
+    return request.error(wire::invalid_params, join({"Unknown prompt: ", *name}));
+  }
+  static const JsonView no_arguments = JsonView::parse("{}").value();
+  std::optional<JsonView> arguments = request.param("arguments");
+  if (!arguments.has_value() || arguments->kind() == JsonKind::null) {
+    arguments = no_arguments;
+  } else if (arguments->kind() != JsonKind::object) {
+    return request.error(wire::invalid_params,
+                         "Invalid params: arguments must be an object");
+  }
+
+  Progress::State progress{};
+  const Context context = context_of(request, progress, notify);
+  scrydantic::Result<std::vector<PromptMessage>> messages;
+  try {
+    messages = found->get(context, *arguments);
+  } catch (const std::exception& thrown) {
+    server_->log_line(join({"prompt ", found->name, " threw: ", thrown.what()}));
+    return request.internal_error();
+  } catch (...) {
+    server_->log_line(join({"prompt ", found->name, " threw an unknown exception"}));
+    return request.internal_error();
+  }
+  if (!messages) {
+    if (!messages.error().model_message.empty()) {
+      return request.error(wire::invalid_params,
+                           join({"Invalid params: ", messages.error().model_message}));
+    }
+    server_->log_line(join({"prompt ", found->name, " failed: ", messages.error().message}));
+    return request.internal_error();
+  }
+
+  wire::GetPromptResult reply{.meta = std::nullopt,
+                              .result_type = std::nullopt,
+                              .description = std::nullopt,
+                              .messages = std::move(*messages)};
+  if (!found->description.empty()) {
+    reply.description = found->description;
+  }
+  if (request.modern) {
+    reply.meta = server_->result_meta();
+    reply.result_type = "complete";
+  }
+  const std::optional<std::string> result = encoded(reply);
+  if (!result.has_value()) {
+    server_->log_line(join({"prompt ", found->name, " wrote text that is not UTF-8"}));
+    return request.internal_error();
+  }
+  return request.result(*result);
+}
+
+std::string Connection::complete(const Request& request) const {
+  const std::optional<JsonView> ref = request.param("ref");
+  const std::optional<JsonView> kind = is_object(ref) ? ref->find("type") : std::nullopt;
+  const std::optional<std::string_view> type = kind.has_value() ? kind->string() : std::nullopt;
+  bool known = false;
+  if (type == "ref/prompt") {
+    const std::optional<JsonView> name = ref->find("name");
+    const std::optional<std::string_view> text = name.has_value() ? name->string() : std::nullopt;
+    known = text.has_value() &&
+            std::ranges::find(server_->prompts_, *text, &BoundPrompt::name) !=
+                server_->prompts_.end();
+  } else if (type == "ref/resource") {
+    const std::optional<JsonView> uri = ref->find("uri");
+    const std::optional<std::string_view> text = uri.has_value() ? uri->string() : std::nullopt;
+    known = text.has_value() && std::ranges::any_of(server_->resources_,
+                                                    [&](const BoundResource& resource) {
+                                                      return resource.uri == *text;
+                                                    });
+  } else {
+    return request.error(wire::invalid_params,
+                         "Invalid params: ref must be a ref/prompt or a ref/resource");
+  }
+  if (!known) {
+    return request.error(wire::invalid_params,
+                         "Invalid params: ref names no prompt or resource of this server");
+  }
+  // The server suggests no values of its own.
+  wire::CompleteResult reply{.meta = std::nullopt,
+                             .result_type = std::nullopt,
+                             .completion = {.values = {}, .total = 0, .has_more = false}};
+  if (request.modern) {
+    reply.meta = server_->result_meta();
+    reply.result_type = "complete";
+  }
+  const std::optional<std::string> result = encoded(reply);
+  return result.has_value() ? request.result(*result) : request.internal_error();
 }
 
 std::optional<std::string> Connection::listen(const Request& request,

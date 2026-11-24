@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cstdint>
+#include <mcp/binding.hpp>
+#include <mcp/content.hpp>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
@@ -25,6 +27,8 @@ inline constexpr int method_not_found = -32601;
 inline constexpr int invalid_params = -32602;
 inline constexpr int internal_error = -32603;
 inline constexpr int unsupported_protocol_version = -32022;
+// The code of a resource that is not there, before 2026-07-28.
+inline constexpr int resource_not_found = -32002;
 
 struct Implementation {
   std::string name;
@@ -48,9 +52,98 @@ struct[[ = rename_all{camel_case}, = skip_null ]] Tool {
 };
 
 struct ToolsCapability {};
+struct ResourcesCapability {};
+struct PromptsCapability {};
+struct CompletionsCapability {};
 
 struct[[= skip_null]] ServerCapabilities {
+  std::optional<CompletionsCapability> completions;
+  std::optional<PromptsCapability> prompts;
+  std::optional<ResourcesCapability> resources;
   std::optional<ToolsCapability> tools;
+};
+
+// One entry of resources/list, or of resources/templates/list, where `uri` is
+// written `uriTemplate`.
+struct[[ = rename_all{camel_case}, = skip_null ]] Resource {
+  std::optional<std::string> uri;
+  std::optional<std::string> uri_template;
+  std::string name;
+  std::optional<std::string> title;
+  std::optional<std::string> description;
+  std::optional<std::string> mime_type;
+};
+
+struct[[= skip_null]] PromptArgument {
+  std::string name;
+  std::optional<std::string> description;
+  bool required{};
+};
+
+struct[[= skip_null]] Prompt {
+  std::string name;
+  std::optional<std::string> title;
+  std::optional<std::string> description;
+  std::vector<PromptArgument> arguments;
+};
+
+// The results of the lists of resources, templates and prompts, and of
+// resources/read, in either era. Under the modern revision each carries the
+// envelope and the caching hints; a legacy one has neither. Each list is JSON
+// text, written when the server's resources or prompts changed.
+struct[[ = rename_all{camel_case}, = skip_null ]] ListResourcesResult {
+  [[= name{"_meta"}]] std::optional<ResultMeta> meta;
+  std::optional<std::string> result_type;
+  Json resources;
+  std::optional<std::int64_t> ttl_ms;
+  std::optional<CacheScope> cache_scope;
+};
+
+struct[[ = rename_all{camel_case}, = skip_null ]] ListResourceTemplatesResult {
+  [[= name{"_meta"}]] std::optional<ResultMeta> meta;
+  std::optional<std::string> result_type;
+  Json resource_templates;
+  std::optional<std::int64_t> ttl_ms;
+  std::optional<CacheScope> cache_scope;
+};
+
+struct[[ = rename_all{camel_case}, = skip_null ]] ListPromptsResult {
+  [[= name{"_meta"}]] std::optional<ResultMeta> meta;
+  std::optional<std::string> result_type;
+  Json prompts;
+  std::optional<std::int64_t> ttl_ms;
+  std::optional<CacheScope> cache_scope;
+};
+
+struct[[ = rename_all{camel_case}, = skip_null ]] ReadResourceResult {
+  [[= name{"_meta"}]] std::optional<ResultMeta> meta;
+  std::optional<std::string> result_type;
+  std::vector<mcp::ResourceContents> contents;
+  std::optional<std::int64_t> ttl_ms;
+  std::optional<CacheScope> cache_scope;
+};
+
+struct[[ = rename_all{camel_case}, = skip_null ]] GetPromptResult {
+  [[= name{"_meta"}]] std::optional<ResultMeta> meta;
+  std::optional<std::string> result_type;
+  std::optional<std::string> description;
+  std::vector<mcp::PromptMessage> messages;
+};
+
+struct[[= rename_all{camel_case}]] Completion {
+  std::vector<std::string> values;
+  std::int64_t total{};
+  bool has_more{};
+};
+
+struct[[ = rename_all{camel_case}, = skip_null ]] CompleteResult {
+  [[= name{"_meta"}]] std::optional<ResultMeta> meta;
+  std::optional<std::string> result_type;
+  Completion completion;
+};
+
+struct ResourceNotFoundData {
+  std::string uri;
 };
 
 // The result of `server/discover`.

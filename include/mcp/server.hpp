@@ -1,18 +1,21 @@
 /// @file
-/// An MCP server whose tools are annotated C++ functions.
+/// An MCP server whose tools, resources and prompts are annotated C++
+/// functions.
 ///
 /// Server holds what a server offers. Connection speaks the protocol for one
 /// client: it takes one JSON-RPC message and returns the response, with no
 /// transport of its own. serve_stdio() in <mcp/stdio.hpp> runs one over the
-/// standard streams.
+/// standard streams, and HttpEndpoint in <mcp/http.hpp> over HTTP.
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <expected>
-#include <functional>
+#include <mcp/binding.hpp>
 #include <mcp/content.hpp>
+#include <mcp/context.hpp>
 #include <memory>
 #include <meta>
 #include <optional>
@@ -26,94 +29,10 @@
 
 namespace mcp {
 
-// A server's source can spell everything it needs under mcp::. These are
-// Scrydantic's own annotations and types, so the Scrydantic guide describes
-// them.
-using scrydantic::check;
-using scrydantic::description;
-using scrydantic::items;
-using scrydantic::Json;
-using scrydantic::keyword;
-using scrydantic::keyword_string;
-using scrydantic::length;
-using scrydantic::multiple_of;
-using scrydantic::name;
-using scrydantic::pattern;
-using scrydantic::range;
-using scrydantic::Result;
-using scrydantic::skip_null;
-using scrydantic::Status;
-using scrydantic::title;
-using scrydantic::tool;
-using scrydantic::tool_error;
-
-/// The protocol revision a Connection serves statelessly, from the metadata
-/// that each request carries.
-inline constexpr std::string_view modern_protocol_version = "2026-07-28";
-
-/// The revisions a Connection serves after an `initialize` handshake, newest
-/// first. A client that asks for any other is offered the first.
-inline constexpr std::string_view legacy_protocol_versions[] = {
-    "2025-11-25",
-    "2025-06-18",
-};
-
-/// Receives one JSON-RPC notification that belongs to the request being
-/// handled, as text without a line break.
-using Notify = std::function<void(std::string_view message)>;
-
-/// Receives one line about a failure on the server's side: a tool that threw,
-/// or a result that its own type rejects. The text is for a developer, and is
-/// never sent to the client.
-using Log = std::function<void(std::string_view line)>;
-
-/// Reports how far a tool call has come.
-///
-/// A tool takes one as a parameter in any position, and the server fills it in.
-/// It is not an argument, so it is not in the tool's input schema. Reports
-/// reach the client only when its request asked for them with a progress
-/// token; otherwise report() does nothing.
-class Progress {
-public:
-  /// A Progress that reports to no one.
-  Progress() = default;
-
-  /// Whether the client asked for progress on this call.
-  [[nodiscard]] explicit operator bool() const noexcept { return state_ != nullptr; }
-
-  /// Sends a `notifications/progress` for this call.
-  ///
-  /// The protocol requires each report of one call to be greater than the last,
-  /// so a report that is not, or that is not a finite number, is dropped.
-  /// @param progress How far the call has come.
-  /// @param total What `progress` reaches when the call is done, if known.
-  /// @param message A short note for a person watching, or empty for none.
-  void report(double progress, std::optional<double> total = std::nullopt,
-              std::string_view message = {}) const;
-
-private:
-  friend class Connection;
-  struct State;
-  explicit Progress(State* state) noexcept : state_{state} {}
-  State* state_{};
-};
-
-/// What the server knows about the call it is serving. It is the Scrydantic
-/// call context of every tool: a tool may take it as a leading
-/// `const mcp::Context&` parameter, which is not part of its input schema.
-struct Context {
-  /// The protocol revision this call is served under.
-  std::string_view protocol_version{};
-  /// Reports progress on this call.
-  Progress progress{};
-  /// Stops when the client cancels the call or goes away. A tool that runs for
-  /// a while checks it, or waits on it, and returns early. What it returns
-  /// then is not sent: a cancelled call gets no response.
-  ///
-  /// A tool may also take a `std::stop_token` parameter in any position, which
-  /// the server fills in with this one, outside the input schema.
-  std::stop_token stop{};
-};
+namespace wire {
+struct ResultMeta;
+struct ServerCapabilities;
+} // namespace wire
 
 namespace detail {
 
@@ -130,6 +49,19 @@ consteval bool returns_content(const std::meta::info function) {
     return std::meta::dealias(std::meta::template_arguments_of(type)[0]) == content;
   }
   return false;
+}
+
+// Whether add<Entity>() has tools to bind: a namespace that declares any, or a
+// tool function.
+consteval bool has_tools(const std::meta::info entity) {
+  if (std::meta::is_namespace(entity)) {
+    return !scrydantic::annotated_functions_of(entity, ^^scrydantic::tool).empty();
+  }
+  return std::ranges::any_of(std::meta::annotations_of(entity), [](const std::meta::info note) {
+    const std::meta::info type = std::meta::type_of(note);
+    return std::meta::has_template_arguments(type) &&
+           std::meta::template_of(type) == ^^scrydantic::tool;
+  });
 }
 
 // For each tool that binding `entity` binds, in order: whether it returns
@@ -171,19 +103,28 @@ public:
   /// each line to standard error. An empty function discards them.
   Server& log(Log sink);
 
-  /// Adds the tools of a namespace, in declaration order, or one tool function.
+  /// Adds the tools, resources and prompts of a namespace, each in declaration
+  /// order, or one function that is any of them.
   ///
-  /// The functions follow the rules of scrydantic::bind(), with mcp::Context as
-  /// the call context.
-  /// @tparam Entity Reflection of a namespace or of a tool function.
-  /// @tparam Tools Leave defaulted: the tools as the calling translation unit
-  /// sees them.
+  /// A tool carries mcp::tool and follows the rules of scrydantic::bind(), with
+  /// mcp::Context as the call context. A resource carries mcp::resource and a
+  /// prompt mcp::prompt; their parameters follow the same rules.
+  /// @tparam Entity Reflection of a namespace or of a function.
+  /// @tparam Tools, Resources, Prompts Leave defaulted: the functions as the
+  /// calling translation unit sees them.
   template <std::meta::info Entity,
-            typename Tools = typename[:scrydantic::tools_of(Entity, ^^Context):]>
+            typename Tools = typename[:scrydantic::tools_of(Entity, ^^Context):],
+            typename Resources = typename[:detail::entries_of(Entity, ^^resource):],
+            typename Prompts = typename[:detail::entries_of(Entity, ^^prompt):]>
   Server& add() {
-    static constexpr std::span<const bool> content =
-        std::define_static_array(detail::content_results(Entity));
-    return add_bound(scrydantic::bind<Entity, Context, Tools>(), content);
+    if constexpr (detail::has_tools(Entity)) {
+      static constexpr std::span<const bool> content =
+          std::define_static_array(detail::content_results(Entity));
+      add_bound(scrydantic::bind<Entity, Context, Tools>(), content);
+    }
+    add(detail::bind_resources(Resources{}));
+    add(detail::bind_prompts(Prompts{}));
+    return *this;
   }
 
   /// Adds the tool member functions of a shared object, which lives as long as
@@ -202,8 +143,15 @@ public:
   /// scrydantic::bind_handler(). Their results are values, never mcp::Content.
   Server& add(std::vector<scrydantic::BoundTool<Context>> tools);
 
+  /// Adds resources that are already bound.
+  Server& add(std::vector<BoundResource> resources);
+
+  /// Adds prompts that are already bound.
+  Server& add(std::vector<BoundPrompt> prompts);
+
   /// Whether the server can be served. It cannot when two of its tools share a
-  /// name or one has no handler; the error names the tool. A Connection to such
+  /// name or one has no handler, or when two resources share a URI or two
+  /// prompts a name; the error says which. A Connection to such
   /// a server answers every request with an internal error.
   [[nodiscard]] Status status() const;
 
@@ -216,6 +164,14 @@ public:
     return tools_.tools();
   }
 
+  /// The resources and resource templates added so far, in order.
+  [[nodiscard]] std::span<const BoundResource> resources() const noexcept {
+    return resources_;
+  }
+
+  /// The prompts added so far, in order.
+  [[nodiscard]] std::span<const BoundPrompt> prompts() const noexcept { return prompts_; }
+
 private:
   friend class Connection;
 
@@ -226,6 +182,17 @@ private:
 
   // Writes the tool lists again after the tools changed.
   void write_tool_lists();
+
+  // Writes the resource and prompt lists again after they changed.
+  void write_resource_lists();
+  void write_prompt_list();
+
+  // Whether the server answers completion/complete: it has a prompt or a
+  // resource template.
+  [[nodiscard]] bool completes() const noexcept;
+  [[nodiscard]] wire::ServerCapabilities capabilities() const;
+  // The `_meta` of every modern result.
+  [[nodiscard]] wire::ResultMeta result_meta() const;
 
   std::string name_;
   std::string version_;
@@ -243,6 +210,12 @@ private:
   std::vector<bool> legacy_structured_{};
   // For each tool, by its position: whether it returns mcp::Content.
   std::vector<bool> content_{};
+  std::vector<BoundResource> resources_{};
+  std::vector<BoundPrompt> prompts_{};
+  // The arrays of resources/list, resources/templates/list and prompts/list.
+  std::string resource_list_{"[]"};
+  std::string template_list_{"[]"};
+  std::string prompt_list_{"[]"};
 };
 
 /// The protocol, for one client.
@@ -291,6 +264,19 @@ private:
                                       const Notify& notify) const;
   [[nodiscard]] std::optional<std::string> listen(const Request& request,
                                                   const Notify& notify) const;
+  // Serves a method of resources, prompts, or completion, or returns nothing
+  // for another method.
+  [[nodiscard]] std::optional<std::string> serve_feature(const Request& request,
+                                                         const Notify& notify) const;
+  [[nodiscard]] std::string list_resources(const Request& request, bool templates) const;
+  [[nodiscard]] std::string read_resource(const Request& request,
+                                          const Notify& notify) const;
+  [[nodiscard]] std::string list_prompts(const Request& request) const;
+  [[nodiscard]] std::string get_prompt(const Request& request, const Notify& notify) const;
+  [[nodiscard]] std::string complete(const Request& request) const;
+  // The context of a call of this request, which reports progress to `notify`.
+  [[nodiscard]] Context context_of(const Request& request, Progress::State& progress,
+                                   const Notify& notify) const;
 
   const Server* server_;
   // The position in legacy_protocol_versions of the revision an `initialize`
@@ -300,17 +286,3 @@ private:
 };
 
 } // namespace mcp
-
-/// Lets a tool take a std::stop_token parameter in any position: Context::stop.
-template <> struct scrydantic::supplier<std::stop_token, mcp::Context> {
-  static std::stop_token supply(const mcp::Context& context) noexcept {
-    return context.stop;
-  }
-};
-
-/// Lets a tool take an mcp::Progress parameter in any position.
-template <> struct scrydantic::supplier<mcp::Progress, mcp::Context> {
-  static mcp::Progress supply(const mcp::Context& context) noexcept {
-    return context.progress;
-  }
-};

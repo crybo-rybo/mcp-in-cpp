@@ -160,6 +160,42 @@ async def exercise(
         result = await client.call_tool("watch", {"city": "Oslo", "seconds": 0})
         check(f"{tag} served after a cancellation", result.content[0].text, "no storm warnings for Oslo")
 
+        resources = (await client.list_resources()).resources
+        check(f"{tag} resources", [str(r.uri) for r in resources], ["weather://about"])
+        templates = (await client.list_resource_templates()).resource_templates
+        check(
+            f"{tag} resource templates",
+            [(t.uri_template, t.mime_type) for t in templates],
+            [("weather://{city}/alerts", "application/json")],
+        )
+        read = await client.read_resource("weather://Oslo/alerts")
+        check(f"{tag} a template is read", read.contents[0].text, '[{"in_hours":6,"kind":"snow"}]')
+        read = await client.read_resource("weather://about")
+        check(
+            f"{tag} a resource is read",
+            read.contents[0].text,
+            "Forecasts are made up for the example.",
+        )
+        try:
+            await client.read_resource("weather://Rome/alerts")
+        except MCPError as error:
+            check(f"{tag} a resource the function refuses", error.error.message, "no alerts are kept for Rome")
+        else:
+            raise SystemExit(f"FAIL {tag} a refused resource did not raise")
+
+        prompts = (await client.list_prompts()).prompts
+        check(
+            f"{tag} prompt arguments",
+            [(a.name, a.required) for a in prompts[0].arguments or []],
+            [("city", True), ("days", False)],
+        )
+        prompt = await client.get_prompt("plan_trip", {"city": "Lima", "days": "2"})
+        check(
+            f"{tag} a prompt is rendered",
+            prompt.messages[0].content.text,
+            "Plan 2 days in Lima. Read the forecast first, and its alerts.",
+        )
+
         try:
             await client.call_tool("fly", {})
         except MCPError as error:
