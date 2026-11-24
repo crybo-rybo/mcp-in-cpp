@@ -87,20 +87,36 @@ struct template_variables {
   std::string_view problem;
 };
 
+// It reads the text a character at a time: under -fsanitize=undefined, GCC
+// cannot evaluate string_view's searches of an annotation's static text at
+// compile time.
 consteval template_variables variables_of(const std::string_view uri) {
   template_variables found;
   std::size_t at = 0;
-  while ((at = uri.find('{', at)) != std::string_view::npos) {
-    const std::size_t end = uri.find('}', at);
-    if (end == std::string_view::npos) {
+  while (at < uri.size()) {
+    if (uri[at] != '{') {
+      ++at;
+      continue;
+    }
+    std::size_t end = at + 1;
+    while (end < uri.size() && uri[end] != '}') {
+      ++end;
+    }
+    if (end == uri.size()) {
       found.problem = "a '{' in the URI template has no '}'";
       return found;
     }
-    std::string_view name = uri.substr(at + 1, end - at - 1);
-    if (name.starts_with('+')) {
-      name.remove_prefix(1);
+    std::size_t first = at + 1;
+    if (first < end && uri[first] == '+') {
+      ++first;
     }
-    if (name.empty() || name.find_first_of("?&#./;=,*:{") != std::string_view::npos) {
+    bool plain = first < end;
+    for (std::size_t c = first; c < end; ++c) {
+      const char letter = uri[c];
+      plain = plain && ((letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z') ||
+                        (letter >= '0' && letter <= '9') || letter == '_');
+    }
+    if (!plain) {
       found.problem = "a URI template variable must be {name} or {+name}";
       return found;
     }
@@ -108,7 +124,7 @@ consteval template_variables variables_of(const std::string_view uri) {
       found.problem = "two URI template variables must have text between them";
       return found;
     }
-    found.names.push_back(name);
+    found.names.push_back(uri.substr(first, end - first));
     at = end + 1;
   }
   return found;

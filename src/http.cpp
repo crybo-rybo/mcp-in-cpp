@@ -414,9 +414,12 @@ struct HttpEndpoint::State {
       return expired;
     });
     const std::size_t most = std::max<std::size_t>(options.max_sessions, 1);
-    while (!sessions.empty() && sessions.size() >= most) {
+    while (sessions.size() >= most) {
       const auto oldest =
           std::ranges::min_element(sessions, {}, [](const auto& entry) { return entry.second.used; });
+      if (oldest == sessions.end()) {
+        break;
+      }
       cancel(oldest->second.session);
       sessions.erase(oldest);
     }

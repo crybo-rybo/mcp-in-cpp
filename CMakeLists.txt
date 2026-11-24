@@ -108,6 +108,26 @@ target_link_libraries(
 )
 set_target_properties(mcp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# cpp-httplib serves the example and the conformance fixture over HTTP. The
+# library does not use it.
+if(MCP_BUILD_EXAMPLES OR MCP_BUILD_TESTS)
+  include(FetchContent)
+  FetchContent_Declare(
+    httplib
+    GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+    GIT_TAG v0.65.0
+    GIT_SHALLOW TRUE
+    SYSTEM
+    EXCLUDE_FROM_ALL
+  )
+  set(HTTPLIB_REQUIRE_OPENSSL OFF)
+  set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF)
+  set(HTTPLIB_USE_ZLIB_IF_AVAILABLE OFF)
+  set(HTTPLIB_USE_BROTLI_IF_AVAILABLE OFF)
+  set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF)
+  FetchContent_MakeAvailable(httplib)
+endif()
+
 if(MCP_BUILD_EXAMPLES)
   add_subdirectory(examples)
 endif()

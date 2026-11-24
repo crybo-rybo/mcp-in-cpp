@@ -89,6 +89,17 @@ pip install mcp
 python tests/interop/python_client.py build/dev/examples/mcp_weather_example
 ```
 
+`tests/conformance/run.sh` runs the official
+[conformance suite](https://github.com/modelcontextprotocol/conformance)
+against `tests/conformance/fixture.cpp` over HTTP, under 2026-07-28 and under
+2025-11-25. The scenarios that fail, each for a feature not built yet, are
+listed in the `expected-failures` files beside it, and a run fails on any
+other failure, or on a listed one that passes. It needs Node 22 or newer:
+
+```sh
+tests/conformance/run.sh build/dev/tests/mcp_conformance_fixture
+```
+
 ## Use it in a project
 
 ```cmake

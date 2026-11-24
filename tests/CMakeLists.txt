@@ -29,3 +29,10 @@ target_link_libraries(
 )
 catch_discover_tests(mcp_tests TEST_PREFIX "mcp.")
 
+
+# The server the official conformance suite tests, over HTTP.
+add_executable(mcp_conformance_fixture conformance/fixture.cpp)
+target_link_libraries(
+  mcp_conformance_fixture
+  PRIVATE mcp::mcp httplib::httplib mcp_project_options
+)
