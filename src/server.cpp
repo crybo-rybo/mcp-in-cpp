@@ -347,9 +347,19 @@ struct Connection::Waiting {
   std::optional<std::string> response;
 };
 
+namespace detail {
+
+struct Registry {
+  std::mutex mutex;
+  std::vector<Connection*> connections;
+};
+
+} // namespace detail
+
 Server::Server(std::string name, std::string version)
     : name_{std::move(name)}, version_{std::move(version)},
-      log_{[](const std::string_view line) { std::cerr << line << '\n'; }} {
+      log_{[](const std::string_view line) { std::cerr << line << '\n'; }},
+      registry_{std::make_shared<detail::Registry>()} {
   std::random_device device;
   for (int word = 0; word < 8; ++word) {
     const std::uint32_t value = device();
@@ -357,6 +367,37 @@ Server::Server(std::string name, std::string version)
       state_key_ += static_cast<char>((value >> shift) & 0xFFU);
     }
   }
+}
+
+void Server::resource_updated(const std::string_view uri) const {
+  const std::scoped_lock lock{registry_->mutex};
+  for (const Connection* const connection : registry_->connections) {
+    connection->resource_updated(uri);
+  }
+}
+
+Connection::Connection(const Server& server) : server_{&server} {
+  const std::scoped_lock lock{server.registry_->mutex};
+  server.registry_->connections.push_back(this);
+}
+
+Connection::~Connection() {
+  const std::scoped_lock lock{server_->registry_->mutex};
+  std::erase(server_->registry_->connections, this);
+}
+
+void Connection::push_to(Notify sink) {
+  const std::scoped_lock lock{push_mutex_};
+  push_ = std::move(sink);
+}
+
+void Connection::resource_updated(const std::string_view uri) const {
+  const std::scoped_lock lock{push_mutex_};
+  if (!push_ || std::ranges::find(subscriptions_, uri) == subscriptions_.end()) {
+    return;
+  }
+  push_(notification_message("notifications/resources/updated",
+                             join({R"({"uri":)", scrydantic::escape_json_string(uri), "}"})));
 }
 
 Server& Server::request_state_key(std::string key) {
@@ -521,7 +562,7 @@ bool Server::completes() const noexcept {
          std::ranges::any_of(resources_, &BoundResource::is_template);
 }
 
-wire::ServerCapabilities Server::capabilities() const {
+wire::ServerCapabilities Server::capabilities(const bool handshake) const {
   wire::ServerCapabilities capabilities{};
   if (completes()) {
     capabilities.completions = wire::CompletionsCapability{};
@@ -533,7 +574,10 @@ wire::ServerCapabilities Server::capabilities() const {
     capabilities.logging = wire::LoggingCapability{};
   }
   if (!resources_.empty()) {
-    capabilities.resources = wire::ResourcesCapability{};
+    // A session can subscribe to a resource; 2026-07-28 would deliver updates
+    // on subscriptions/listen, which does not carry them yet.
+    capabilities.resources = wire::ResourcesCapability{
+        .subscribe = handshake ? std::optional<bool>{true} : std::nullopt};
   }
   // A server with nothing else still says that it has tools, if none yet.
   if (!tools_.tools().empty() || (resources_.empty() && prompts_.empty())) {
@@ -787,6 +831,10 @@ std::optional<std::string> Connection::dispatch(Request& request,
   if (request.method == "logging/setLevel" && server_->logs_) {
     return set_log_level(request);
   }
+  if ((request.method == "resources/subscribe" || request.method == "resources/unsubscribe") &&
+      !server_->resources_.empty()) {
+    return subscribe(request, request.method == "resources/subscribe");
+  }
   if (request.method == "tools/list") {
     return list_tools(request);
   }
@@ -798,6 +846,23 @@ std::optional<std::string> Connection::dispatch(Request& request,
   }
   return request.error(wire::method_not_found,
                        join({"Method not found: ", request.method}));
+}
+
+std::string Connection::subscribe(const Request& request, const bool subscribing) {
+  const std::optional<JsonView> uri_value = request.param("uri");
+  const std::optional<std::string_view> uri =
+      uri_value.has_value() ? uri_value->string() : std::nullopt;
+  if (!uri.has_value()) {
+    return request.error(wire::invalid_params, "Invalid params: uri must be a string");
+  }
+  const std::scoped_lock lock{push_mutex_};
+  const auto found = std::ranges::find(subscriptions_, *uri);
+  if (subscribing && found == subscriptions_.end()) {
+    subscriptions_.emplace_back(*uri);
+  } else if (!subscribing && found != subscriptions_.end()) {
+    subscriptions_.erase(found);
+  }
+  return request.result("{}");
 }
 
 std::string Connection::set_log_level(const Request& request) {
@@ -859,7 +924,7 @@ std::string Connection::initialize(const Request& request) {
       known != nullptr ? *known : legacy_protocol_versions[0];
   const std::optional<std::string> result = encoded(wire::InitializeResult{
       .protocol_version = std::string{chosen},
-      .capabilities = server_->capabilities(),
+      .capabilities = server_->capabilities(true),
       .server_info = {.name = server_->name_, .version = server_->version_},
       .instructions = server_->instructions_,
   });
@@ -888,7 +953,7 @@ std::string Connection::discover(const Request& request) const {
       .meta = {.server_info = {.name = server_->name_, .version = server_->version_}},
       .result_type = "complete",
       .supported_versions = supported_versions(),
-      .capabilities = server_->capabilities(),
+      .capabilities = server_->capabilities(false),
       .instructions = server_->instructions_,
       .ttl_ms = server_->list_ttl_.count(),
       .cache_scope = wire::CacheScope::public_,

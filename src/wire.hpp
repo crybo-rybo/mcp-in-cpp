@@ -53,7 +53,9 @@ struct[[ = rename_all{camel_case}, = skip_null ]] Tool {
 };
 
 struct ToolsCapability {};
-struct ResourcesCapability {};
+struct[[= skip_null]] ResourcesCapability {
+  std::optional<bool> subscribe;
+};
 struct PromptsCapability {};
 struct CompletionsCapability {};
 struct LoggingCapability {};

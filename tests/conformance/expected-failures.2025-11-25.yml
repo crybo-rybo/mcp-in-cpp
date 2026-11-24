@@ -1,6 +1,5 @@
 # The scored scenarios of 2025-11-25 that the fixture does not pass, each for a
 # feature the library does not have yet. The suite fails when one of these
-# starts to pass, so the list only shrinks.
-server:
-  - resources-subscribe
-  - resources-unsubscribe
+# starts to pass, so the list only shrinks. It is empty: every scored scenario
+# passes.
+server: []

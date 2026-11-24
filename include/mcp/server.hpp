@@ -37,6 +37,13 @@ struct ResultMeta;
 struct ServerCapabilities;
 } // namespace wire
 
+class Connection;
+
+namespace detail {
+// The connections that serve a server, which it tells of updated resources.
+struct Registry;
+} // namespace detail
+
 namespace detail {
 
 // Whether a function's return type is mcp::Content, or a Result of it.
@@ -193,6 +200,15 @@ public:
   /// its own.
   void log_line(std::string_view line) const;
 
+  /// Tells the clients that subscribed to a resource that it has changed.
+  ///
+  /// A client of a handshake session subscribes with `resources/subscribe`,
+  /// and is sent `notifications/resources/updated` on the stream its transport
+  /// keeps for messages of no request: stdio's output, or the event stream of
+  /// a GET to the HTTP endpoint. It may be called from any thread.
+  /// @param uri The resource's URI, as a client reads it.
+  void resource_updated(std::string_view uri) const;
+
   /// The tools added so far, in the order they are listed to a client.
   [[nodiscard]] std::span<const scrydantic::BoundTool<Context>> tools() const noexcept {
     return tools_.tools();
@@ -224,7 +240,8 @@ private:
   // Whether the server answers completion/complete: it has a prompt or a
   // resource template.
   [[nodiscard]] bool completes() const noexcept;
-  [[nodiscard]] wire::ServerCapabilities capabilities() const;
+  // The capabilities a client is told of in discovery, or in a handshake.
+  [[nodiscard]] wire::ServerCapabilities capabilities(bool handshake) const;
   // The `_meta` of every modern result.
   [[nodiscard]] wire::ResultMeta result_meta() const;
 
@@ -234,6 +251,7 @@ private:
   std::chrono::milliseconds list_ttl_{0};
   Log log_;
   scrydantic::ToolSet<Context> tools_{};
+  std::shared_ptr<detail::Registry> registry_;
   std::optional<scrydantic::Error> problem_{};
   // The `tools` array of a tools/list result, as JSON text, for each era. The
   // legacy list leaves out an output schema that is not an object's.
@@ -269,7 +287,20 @@ class Connection {
 public:
   /// @param server The server to speak for. It must outlive the connection and
   /// must not change while the connection is in use.
-  explicit Connection(const Server& server) noexcept : server_{&server} {}
+  explicit Connection(const Server& server);
+  ~Connection();
+  Connection(const Connection&) = delete;
+  Connection& operator=(const Connection&) = delete;
+
+  /// Sets where the messages that belong to no request go: the updates of the
+  /// resources the client subscribed to. A transport with a stream for them
+  /// sets it, and an empty function clears it; until then they are dropped.
+  /// Once this returns, the sink that it replaced is not called again.
+  void push_to(Notify sink);
+
+  /// Sends `notifications/resources/updated` for `uri`, if the client of a
+  /// handshake session subscribed to it. Server::resource_updated calls this.
+  void resource_updated(std::string_view uri) const;
 
   /// Handles one JSON-RPC message.
   ///
@@ -318,6 +349,7 @@ private:
   [[nodiscard]] Context context_of(const Request& request, Call& call,
                                    const Notify& notify) const;
   [[nodiscard]] std::string set_log_level(const Request& request);
+  [[nodiscard]] std::string subscribe(const Request& request, bool subscribing);
   // Sets up what a call may ask the client. Under 2026-07-28 it reads the
   // answers the request brings, and returns the error for a requestState that
   // is not the server's. `target` and `arguments` are what the state is bound
@@ -355,6 +387,11 @@ private:
   mutable std::mutex waiting_mutex_;
   mutable std::unordered_map<std::string, std::shared_ptr<Waiting>> waiting_;
   mutable std::atomic<std::int64_t> next_request_id_{0};
+  // Where messages of no request go, and the resources the client subscribed
+  // to.
+  mutable std::mutex push_mutex_;
+  Notify push_;
+  std::vector<std::string> subscriptions_;
 };
 
 } // namespace mcp

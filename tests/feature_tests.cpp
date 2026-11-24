@@ -233,8 +233,8 @@ TEST_CASE("a legacy session reads resources and renders prompts without the enve
   const std::optional<std::string> initialized =
       connection.handle(support::initialize("2025-06-18"));
   REQUIRE(initialized.has_value());
-  CHECK(initialized->find(R"("capabilities":{"completions":{},"prompts":{},"resources":{},)"
-                          R"("tools":{}})") != std::string::npos);
+  CHECK(initialized->find(R"("capabilities":{"completions":{},"prompts":{},)"
+                          R"("resources":{"subscribe":true},"tools":{}})") != std::string::npos);
 
   CHECK(connection.handle(legacy("1", "resources/read", R"({"uri":"books://catalog"})")) ==
         result("1", R"({"contents":[{"mimeType":"text/plain","text":"Dune\nEmma",)"
@@ -260,4 +260,41 @@ TEST_CASE("a URI template matches whole segments") {
   CHECK(mcp::match_uri_template("a://{x}-{y}", "a://1-2") == R"({"x":"1","y":"2"})");
   CHECK(mcp::match_uri_template("a://{+p}", "a://x/y?z") == R"({"p":"x/y?z"})");
   CHECK(mcp::match_uri_template("a://b", "a://b/c") == std::nullopt);
+}
+
+TEST_CASE("a session subscribes to a resource and is told when it changes") {
+  std::vector<std::string> log;
+  const mcp::Server server = library_server(log);
+  mcp::Connection connection{server};
+  REQUIRE(connection.handle(support::initialize("2025-11-25")).has_value());
+  std::vector<std::string> pushed;
+  connection.push_to([&pushed](const std::string_view message) { pushed.emplace_back(message); });
+
+  // No update before a subscription.
+  server.resource_updated("books://catalog");
+  CHECK(pushed.empty());
+
+  CHECK(connection.handle(legacy("1", "resources/subscribe", R"({"uri":"books://catalog"})")) ==
+        result("1", "{}"));
+  server.resource_updated("books://catalog");
+  server.resource_updated("books://1");
+  CHECK(pushed == std::vector<std::string>{
+                      R"({"jsonrpc":"2.0","method":"notifications/resources/updated",)"
+                      R"("params":{"uri":"books://catalog"}})"});
+
+  CHECK(connection.handle(legacy("2", "resources/unsubscribe", R"({"uri":"books://catalog"})")) ==
+        result("2", "{}"));
+  server.resource_updated("books://catalog");
+  CHECK(pushed.size() == 1);
+
+  // A connection that is gone is told nothing.
+  connection.push_to({});
+}
+
+TEST_CASE("2026-07-28 has no resources/subscribe") {
+  std::vector<std::string> log;
+  const mcp::Server server = library_server(log);
+  mcp::Connection connection{server};
+  CHECK(connection.handle(modern("1", "resources/subscribe", R"("uri":"books://catalog")")) ==
+        error("1", -32601, "Method not found: resources/subscribe"));
 }

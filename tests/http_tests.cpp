@@ -64,6 +64,11 @@ public:
     return true;
   }
 
+  [[nodiscard]] bool started() const {
+    const std::scoped_lock lock{*mutex_};
+    return starts > 0;
+  }
+
   [[nodiscard]] std::optional<std::string> header(const std::string_view name) const {
     for (const mcp::HttpHeader& header : headers) {
       if (header.name == name) {
@@ -395,4 +400,45 @@ TEST_CASE("a subscription is acknowledged on its stream, which stays open until 
         R"("params":{"_meta":{"io.modelcontextprotocol/subscriptionId":9},)"
         R"("notifications":{}}})"
         "\r\n\r\n: keepalive\r\n\r\n: keepalive\r\n\r\n");
+}
+
+namespace watched {
+
+[[= mcp::resource{.uri = "test://watched"}]] inline std::string watched() { return "now"; }
+
+} // namespace watched
+
+TEST_CASE("a session's GET stream carries the updates of what it subscribed to") {
+  mcp::Server server{"sample", "0.0.1"};
+  server.add<^^watched>();
+  mcp::HttpEndpoint endpoint{server, {.keepalive = std::chrono::milliseconds{20}}};
+  const Recorded initialized =
+      post(endpoint, legacy_headers(), support::initialize("2025-11-25"));
+  const std::string session = initialized.header("Mcp-Session-Id").value_or("");
+  REQUIRE(post(endpoint, legacy_headers(session),
+               support::legacy("1", "resources/subscribe", R"({"uri":"test://watched"})"))
+              .body == support::result("1", "{}"));
+
+  // The stream opens with a comment and carries the update, then the client
+  // is gone at the next keepalive.
+  Recorded stream;
+  stream.writes_left = 2;
+  std::jthread streaming{[&] {
+    endpoint.handle({.method = "GET", .headers = legacy_headers(session), .body = {}}, stream);
+  }};
+  while (!stream.started()) {
+    std::this_thread::yield();
+  }
+  server.resource_updated("test://watched");
+  streaming.join();
+  CHECK(stream.header("Content-Type") == "text/event-stream");
+  CHECK(stream.body == ": keepalive\r\n\r\nevent: message\r\ndata: "
+                       R"({"jsonrpc":"2.0","method":"notifications/resources/updated",)"
+                       R"("params":{"uri":"test://watched"}})"
+                       "\r\n\r\n");
+
+  // A GET without a session is not allowed.
+  Recorded plain;
+  endpoint.handle({.method = "GET", .headers = legacy_headers(), .body = {}}, plain);
+  CHECK(plain.status == 405);
 }

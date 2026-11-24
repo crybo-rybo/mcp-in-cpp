@@ -331,6 +331,9 @@ struct Session {
   Connection connection;
   std::mutex mutex;
   std::unordered_map<std::string, std::shared_ptr<std::stop_source>> running;
+  // How many streams of messages of no request the session has had: the last
+  // one is the one its connection writes to.
+  std::uint64_t streams{};
 
   void cancel(const std::string& id) {
     const std::scoped_lock lock{mutex};
@@ -445,6 +448,8 @@ struct HttpEndpoint::State {
 
   void serve_legacy(const HttpRequest& request, HttpResponse& out, const JsonView& message,
                     const std::string& id, std::string_view method);
+  void stream_session(const HttpRequest& request, HttpResponse& out, const std::string& id,
+                      std::stop_token stop);
   void serve_modern(const HttpRequest& request, HttpResponse& out, const JsonView& message,
                     const std::string& id, std::string_view method,
                     std::string_view version, std::stop_token stop);
@@ -484,6 +489,10 @@ void HttpEndpoint::handle(const HttpRequest& request, HttpResponse& out,
     } else {
       send_plain(out, 404, "Session not found");
     }
+    return;
+  }
+  if (iequals(request.method, "GET") && session_header.has_value()) {
+    state.stream_session(request, out, std::string{*session_header}, std::move(stop));
     return;
   }
   if (!iequals(request.method, "POST")) {
@@ -617,6 +626,43 @@ void HttpEndpoint::State::serve_legacy(const HttpRequest& request, HttpResponse&
     reply.finish(status_of(*response, false), *response);
   } else if (!reply.started()) {
     send_empty(out, 202);
+  }
+}
+
+// The stream of a session's messages of no request: the updates of the
+// resources it subscribed to. It lasts until the client closes it, and a
+// newer one replaces it.
+void HttpEndpoint::State::stream_session(const HttpRequest& request, HttpResponse& out,
+                                         const std::string& id, std::stop_token stop) {
+  const std::shared_ptr<Session> session = find(id);
+  if (session == nullptr) {
+    send_plain(out, 404, "Session not found");
+    return;
+  }
+  if (!accepts(request.header("Accept"), "text/event-stream")) {
+    send_plain(out, 406, "Accept must include text/event-stream");
+    return;
+  }
+  std::stop_source gone;
+  const std::stop_callback forward{stop, [&gone] { gone.request_stop(); }};
+  Reply reply{out, true, gone};
+  std::uint64_t mine = 0;
+  {
+    const std::scoped_lock lock{session->mutex};
+    mine = ++session->streams;
+    session->connection.push_to([&reply](const std::string_view text) { reply.event(text); });
+  }
+  const std::stop_token closed = gone.get_token();
+  std::mutex quiet;
+  std::condition_variable_any idle;
+  std::unique_lock lock{quiet};
+  // The first comment opens the stream.
+  while (reply.comment() && !closed.stop_requested()) {
+    idle.wait_for(lock, closed, options.keepalive, [] { return false; });
+  }
+  const std::scoped_lock last{session->mutex};
+  if (session->streams == mine) {
+    session->connection.push_to({});
   }
 }
 
