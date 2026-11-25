@@ -4,9 +4,11 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <mcp/ask.hpp>
 #include <mcp/binding.hpp>
 #include <mcp/content.hpp>
+#include <mcp/context.hpp>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
@@ -258,6 +260,7 @@ struct[[= skip_null]] RequestMeta {
       client_capabilities;
   [[= name{"io.modelcontextprotocol/clientInfo"}]] std::optional<Implementation>
       client_info;
+  [[= name{"io.modelcontextprotocol/logLevel"}]] std::optional<mcp::LogLevel> log_level;
   [[= name{"io.modelcontextprotocol/protocolVersion"}]] std::optional<std::string>
       protocol_version;
   [[= name{"progressToken"}]] std::optional<std::uint64_t> progress_token;
@@ -284,6 +287,55 @@ struct[[ = rename_all{camel_case}, = skip_null ]] CallToolParams {
   std::optional<Json> input_responses;
   std::string name;
   std::optional<Json> request_state;
+};
+
+// The params of resources/read, which under 2026-07-28 may be sent again after
+// `input_required`, as tools/call is.
+struct[[ = rename_all{camel_case}, = skip_null ]] ReadResourceParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  std::optional<Json> input_responses;
+  std::optional<Json> request_state;
+  std::string uri;
+};
+
+// The params of prompts/get: the arguments are strings by name, and left out
+// when there are none.
+struct[[ = rename_all{camel_case}, = skip_null ]] GetPromptParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  std::optional<std::map<std::string, std::string>> arguments;
+  std::optional<Json> input_responses;
+  std::string name;
+  std::optional<Json> request_state;
+};
+
+// What completion/complete completes: a prompt's argument by the prompt's
+// name, or a variable of a resource template by the template.
+struct[[= skip_null]] CompletionReference {
+  std::optional<std::string> name;
+  std::string type;
+  std::optional<std::string> uri;
+};
+
+struct CompletionArgument {
+  std::string name;
+  std::string value;
+};
+
+struct CompletionContext {
+  std::map<std::string, std::string> arguments;
+};
+
+struct[[= skip_null]] CompleteParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  CompletionArgument argument;
+  std::optional<CompletionContext> context;
+  CompletionReference ref;
+};
+
+// The params of logging/setLevel, before 2026-07-28.
+struct[[= skip_null]] SetLevelParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  mcp::LogLevel level{};
 };
 
 struct[[ = rename_all{camel_case}, = skip_null ]] InitializeParams {

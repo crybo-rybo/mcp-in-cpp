@@ -1,4 +1,5 @@
 #include "answer.hpp"
+#include "features.hpp"
 #include "jsonrpc.hpp"
 #include "verbatim.hpp"
 #include "wire.hpp"
@@ -15,6 +16,7 @@
 #include <functional>
 #include <limits>
 #include <list>
+#include <map>
 #include <mcp/ask.hpp>
 #include <mcp/channel.hpp>
 #include <mcp/client.hpp>
@@ -279,6 +281,17 @@ struct Client::State final : Incoming {
   // and the channel closes.
   void shutdown();
 
+  // In a handshake session, asks for the log messages of ClientOptions, once
+  // the client has opened.
+  Reply<void> set_log_level();
+
+  // Follows the pages of a list, handing each result to `page`, until the
+  // server gives no cursor, or fails with Fault::protocol after `max_pages`.
+  // `what` names the list in that error.
+  Reply<void> pages(std::string_view method,
+                    const std::function<Reply<void>(const Response&)>& page,
+                    std::string_view what, const CallOptions& call);
+
   std::unique_ptr<Channel> channel;
   ClientOptions options;
   ServerInfo info;
@@ -371,6 +384,8 @@ private:
 
   void answered(std::string_view text, const JsonView& document);
   void notified(const JsonView& document, std::string_view method);
+  // Hands a log message to ClientOptions::log.
+  void logged(std::string_view text, const JsonView& document);
   void requested(std::string_view text, const JsonView& document,
                  std::string_view method, const JsonView& id);
   // Sends one notification or response, unless the client is closed.
@@ -605,6 +620,10 @@ Client::State::start(const std::string_view method, Params params,
     meta.client_info =
         wire::Implementation{.name = options.name, .version = options.version};
     meta.protocol_version = std::string{revision.version};
+    // A server of 2026-07-28 logs only for a request that asks.
+    if (options.log) {
+      meta.log_level = call.log_level.value_or(options.log_level);
+    }
   }
   if (call.progress) {
     // The request's id is unique for the life of the client, so it serves as
@@ -983,6 +1002,8 @@ void Client::State::message(const std::string_view text) {
   }
   if (const std::optional<JsonView> id = document->find("id")) {
     requested(text, *document, *name, *id);
+  } else if (*name == "notifications/message") {
+    logged(text, *document);
   } else {
     notified(*document, *name);
   }
@@ -1283,7 +1304,8 @@ Client::State::Judgment Client::State::judge_discover(const Reply<Response>& ans
   }
 
   const JsonView& result = answer->result;
-  if (Reply<void> done = complete(*answer); !done) {
+  // Qualified, since Client::complete hides it here.
+  if (Reply<void> done = mcp::complete(*answer); !done) {
     return not_modern(done.error());
   }
   const Versions supported = versions_in(result.find("supportedVersions"));
@@ -1542,6 +1564,9 @@ Reply<Client> Client::open(std::unique_ptr<Channel> channel, ClientOptions optio
     // The state closes the channel as it goes.
     return std::unexpected(std::move(agreed).error());
   }
+  if (Reply<void> asked = state->set_log_level(); !asked) {
+    return std::unexpected(std::move(asked).error());
+  }
   return Client{std::move(state)};
 }
 
@@ -1674,5 +1699,226 @@ Reply<Json> typed_source(const ToolResult& result, const bool text) {
 }
 
 } // namespace detail
+
+// Resources, prompts, completion and log messages.
+
+Reply<void> Client::State::set_log_level() {
+  const Revision current = revision();
+  if (current.modern || !options.log || !info.has("logging")) {
+    return {};
+  }
+  Reply<Response> set =
+      request("logging/setLevel",
+              wire::SetLevelParams{.meta = {}, .level = options.log_level}, {}, {});
+  // Only a server that is gone or does not answer fails the opening. One that
+  // refuses the level logs as it likes, and the client still passes over what
+  // is less severe than it asked for.
+  if (!set &&
+      (set.error().fault == Fault::transport || set.error().fault == Fault::timeout)) {
+    return std::unexpected(std::move(set).error());
+  }
+  return {};
+}
+
+void Client::State::logged(const std::string_view text, const JsonView& document) {
+  if (!options.log) {
+    return;
+  }
+  const std::optional<JsonView> params = document.find("params");
+  const std::optional<std::string_view> written = verbatim::member(text, "params");
+  if (!is_object(params) || !written.has_value()) {
+    return;
+  }
+  const std::optional<LogMessage> message = features::read_log(*written, *params);
+  // Under 2026-07-28 each request asks for its own level, which the server
+  // keeps to; a handshake session has the one level the client set.
+  if (!message.has_value() ||
+      (!revision().modern && message->level < options.log_level)) {
+    return;
+  }
+  try {
+    options.log(*message);
+  } catch (...) {
+    // The caller's own function failed. It is not the server's doing.
+    static_cast<void>(std::current_exception());
+  }
+}
+
+Reply<void>
+Client::State::pages(const std::string_view method,
+                     const std::function<Reply<void>(const Response&)>& page,
+                     const std::string_view what, const CallOptions& call) {
+  std::optional<std::string> cursor;
+  for (std::size_t count = 0; count < max_pages; ++count) {
+    Reply<Response> response = request(
+        method, wire::ListParams{.meta = std::nullopt, .cursor = std::move(cursor)}, {},
+        call);
+    if (!response) {
+      return std::unexpected(std::move(response).error());
+    }
+    if (Reply<void> read = page(*response); !read) {
+      return read;
+    }
+    const std::optional<JsonView> next = response->result.find("nextCursor");
+    if (!next.has_value() || next->kind() == JsonKind::null) {
+      return {};
+    }
+    if (!next->string().has_value()) {
+      return std::unexpected(
+          fault(Fault::protocol, "the server's nextCursor is not a string"));
+    }
+    cursor = std::string{*next->string()};
+  }
+  return std::unexpected(
+      fault(Fault::protocol, join({"the server's ", what, " list did not end within ",
+                                   std::to_string(max_pages), " pages"})));
+}
+
+Reply<std::vector<Resource>> Client::list_resources(const CallOptions& options) {
+  if (state_ == nullptr) {
+    return std::unexpected(moved_from());
+  }
+  std::vector<Resource> resources;
+  Reply<void> listed = state_->pages(
+      "resources/list",
+      [&resources](const Response& response) {
+        return features::read_resources(response.text, response.result, resources);
+      },
+      "resource", options);
+  if (!listed) {
+    return std::unexpected(std::move(listed).error());
+  }
+  return resources;
+}
+
+Reply<std::vector<ResourceTemplate>>
+Client::list_resource_templates(const CallOptions& options) {
+  if (state_ == nullptr) {
+    return std::unexpected(moved_from());
+  }
+  std::vector<ResourceTemplate> templates;
+  Reply<void> listed = state_->pages(
+      "resources/templates/list",
+      [&templates](const Response& response) {
+        return features::read_templates(response.text, response.result, templates);
+      },
+      "resource template", options);
+  if (!listed) {
+    return std::unexpected(std::move(listed).error());
+  }
+  return templates;
+}
+
+Reply<std::vector<ResourceContents>> Client::read_resource(const std::string_view uri,
+                                                           const CallOptions& options) {
+  if (state_ == nullptr) {
+    return std::unexpected(moved_from());
+  }
+  Reply<Response> response =
+      state_->request("resources/read",
+                      wire::ReadResourceParams{.meta = std::nullopt,
+                                               .input_responses = std::nullopt,
+                                               .request_state = std::nullopt,
+                                               .uri = std::string{uri}},
+                      uri, options);
+  if (!response) {
+    return std::unexpected(std::move(response).error());
+  }
+  return features::read_contents(response->result);
+}
+
+Reply<std::vector<Prompt>> Client::list_prompts(const CallOptions& options) {
+  if (state_ == nullptr) {
+    return std::unexpected(moved_from());
+  }
+  std::vector<Prompt> prompts;
+  Reply<void> listed = state_->pages(
+      "prompts/list",
+      [&prompts](const Response& response) {
+        return features::read_prompts(response.text, response.result, prompts);
+      },
+      "prompt", options);
+  if (!listed) {
+    return std::unexpected(std::move(listed).error());
+  }
+  return prompts;
+}
+
+Reply<PromptResult>
+Client::get_prompt(const std::string_view name,
+                   const std::map<std::string, std::string>& arguments,
+                   const CallOptions& options) {
+  if (state_ == nullptr) {
+    return std::unexpected(moved_from());
+  }
+  Reply<Response> response = state_->request(
+      "prompts/get",
+      wire::GetPromptParams{.meta = std::nullopt,
+                            .arguments = arguments.empty() ? std::nullopt
+                                                           : std::optional{arguments},
+                            .input_responses = std::nullopt,
+                            .name = std::string{name},
+                            .request_state = std::nullopt},
+      name, options);
+  if (!response) {
+    return std::unexpected(std::move(response).error());
+  }
+  return features::read_prompt(response->result);
+}
+
+namespace {
+
+[[nodiscard]] wire::CompleteParams
+complete_params(wire::CompletionReference reference, const std::string_view argument,
+                const std::string_view value,
+                const std::map<std::string, std::string>& context) {
+  return {.meta = std::nullopt,
+          .argument = {.name = std::string{argument}, .value = std::string{value}},
+          .context = context.empty()
+                         ? std::nullopt
+                         : std::optional{wire::CompletionContext{.arguments = context}},
+          .ref = std::move(reference)};
+}
+
+} // namespace
+
+Reply<Completion> Client::complete(const PromptReference& prompt,
+                                   const std::string_view argument,
+                                   const std::string_view value,
+                                   const std::map<std::string, std::string>& context,
+                                   const CallOptions& options) {
+  if (state_ == nullptr) {
+    return std::unexpected(moved_from());
+  }
+  Reply<Response> response = state_->request(
+      "completion/complete",
+      complete_params({.name = prompt.name, .type = "ref/prompt", .uri = std::nullopt},
+                      argument, value, context),
+      {}, options);
+  if (!response) {
+    return std::unexpected(std::move(response).error());
+  }
+  return features::read_completion(response->result);
+}
+
+Reply<Completion> Client::complete(const ResourceTemplateReference& resource,
+                                   const std::string_view variable,
+                                   const std::string_view value,
+                                   const std::map<std::string, std::string>& context,
+                                   const CallOptions& options) {
+  if (state_ == nullptr) {
+    return std::unexpected(moved_from());
+  }
+  Reply<Response> response = state_->request(
+      "completion/complete",
+      complete_params(
+          {.name = std::nullopt, .type = "ref/resource", .uri = resource.uri}, variable,
+          value, context),
+      {}, options);
+  if (!response) {
+    return std::unexpected(std::move(response).error());
+  }
+  return features::read_completion(response->result);
+}
 
 } // namespace mcp

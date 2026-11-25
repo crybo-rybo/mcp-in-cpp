@@ -106,6 +106,7 @@ add_library(
   src/client.cpp
   src/content.cpp
   src/dispatcher.cpp
+  src/features.cpp
   src/http.cpp
   src/launch.cpp
   src/loopback.cpp

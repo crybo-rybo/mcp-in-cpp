@@ -17,6 +17,7 @@ add_executable(
   mcp_tests
   ask_tests.cpp
   client_ask_tests.cpp
+  client_feature_tests.cpp
   client_stdio_tests.cpp
   client_tests.cpp
   crypto_tests.cpp
@@ -26,6 +27,7 @@ add_executable(
   legacy_tests.cpp
   logging_tests.cpp
   loopback_ask_tests.cpp
+  loopback_feature_tests.cpp
   loopback_tests.cpp
   modern_tests.cpp
   stdio_tests.cpp

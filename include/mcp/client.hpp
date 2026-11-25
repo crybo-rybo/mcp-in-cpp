@@ -28,7 +28,10 @@
 #include <filesystem>
 #include <functional>
 #include <iosfwd>
+#include <map>
+#include <mcp/annotations.hpp>
 #include <mcp/ask.hpp>
+#include <mcp/binding.hpp>
 #include <mcp/channel.hpp>
 #include <mcp/content.hpp>
 #include <mcp/context.hpp>
@@ -69,6 +72,16 @@ struct FormRequest {
   /// properties are strings, numbers, booleans, and enumerations, each of which
   /// may give a `default`. A `$ref` in it is never fetched.
   scrydantic::Json schema{};
+};
+
+/// One log message of the server's, from `notifications/message`.
+struct LogMessage {
+  /// How severe it is.
+  LogLevel level{LogLevel::info};
+  /// The name of the logger that wrote it, or empty when the server named none.
+  std::string logger{};
+  /// What the server logged, as the server wrote it: any JSON, often a string.
+  scrydantic::Json data{};
 };
 
 /// How a client presents itself, how long it waits, and how it answers what a
@@ -148,6 +161,23 @@ struct ClientOptions {
   /// Returns the client's roots, each a `file://` URI. The client declares
   /// roots, without `listChanged`, when this is set.
   std::function<std::vector<Root>()> roots{};
+  /// Receives the server's log messages. The client asks for them only when
+  /// this is set. Under 2026-07-28 each request carries `log_level`, or the
+  /// call's own CallOptions::log_level, in its `_meta`, and the server logs
+  /// only for a request that asks, at that level or above. In a handshake
+  /// session the level is the session's: once the handshake is done, the
+  /// client sends `logging/setLevel` with `log_level` if the server declared
+  /// `logging`, and passes over any message less severe. A server that refuses
+  /// the level does not stop the client from opening; one that gives no
+  /// answer to it does.
+  ///
+  /// It is called on a thread of the channel's as a message arrives, and may
+  /// be called from several threads at once. It must return soon, and must
+  /// not wait for a call of this client, whose answer may have to come through
+  /// the same thread. What it throws is caught and dropped.
+  std::function<void(const LogMessage& message)> log{};
+  /// The least severe log message the client asks for.
+  LogLevel log_level{LogLevel::info};
 };
 
 /// A report of how far a call has come, from `notifications/progress`.
@@ -174,6 +204,10 @@ struct CallOptions {
   /// The time limit of this call in place of ClientOptions::timeout. Zero waits
   /// for ever.
   std::optional<std::chrono::milliseconds> timeout{};
+  /// Under 2026-07-28, the least severe log message this call asks for in
+  /// place of ClientOptions::log_level. A handshake session has one level for
+  /// all its calls, so there it changes nothing.
+  std::optional<LogLevel> log_level{};
 };
 
 /// What a client learned about the server when it opened, in either era.
@@ -228,6 +262,103 @@ struct ToolResult {
   bool is_error{};
 };
 
+/// A resource that a server offers, from `resources/list`.
+struct Resource {
+  /// The URI it is read by.
+  std::string uri{};
+  std::string name{};
+  /// A name for display, or empty for none.
+  std::string title{};
+  /// What the resource is, or empty for none.
+  std::string description{};
+  /// The media type of its contents, or empty when the server did not say.
+  std::string mime_type{};
+  /// Its size in bytes, if the server knows.
+  std::optional<std::int64_t> size{};
+  /// Its annotations object, as the server wrote it, if it gave one.
+  std::optional<scrydantic::Json> annotations{};
+  /// Its icons, as the server wrote them, if it gave any.
+  std::optional<scrydantic::Json> icons{};
+  /// Its `_meta` object, as the server wrote it, if it gave one.
+  std::optional<scrydantic::Json> meta{};
+};
+
+/// A template of resources that a server offers, from
+/// `resources/templates/list`. Its URI is filled in to make the URI of a
+/// resource, as read() does from a declaration.
+struct ResourceTemplate {
+  /// The URI template, such as `weather://{city}/alerts`.
+  std::string uri_template{};
+  std::string name{};
+  /// A name for display, or empty for none.
+  std::string title{};
+  /// What its resources are, or empty for none.
+  std::string description{};
+  /// The media type of every resource it makes, or empty when the server did
+  /// not say.
+  std::string mime_type{};
+  /// Its annotations object, as the server wrote it, if it gave one.
+  std::optional<scrydantic::Json> annotations{};
+  /// Its icons, as the server wrote them, if it gave any.
+  std::optional<scrydantic::Json> icons{};
+  /// Its `_meta` object, as the server wrote it, if it gave one.
+  std::optional<scrydantic::Json> meta{};
+};
+
+/// A prompt that a server offers, from `prompts/list`.
+struct Prompt {
+  /// One argument of the prompt, which get_prompt() gives as text.
+  struct Argument {
+    std::string name{};
+    /// A name for display, or empty for none.
+    std::string title{};
+    /// What the argument is, or empty for none.
+    std::string description{};
+    /// Whether the prompt needs it.
+    bool required{};
+  };
+
+  std::string name{};
+  /// A name for display, or empty for none.
+  std::string title{};
+  /// What the prompt does, or empty for none.
+  std::string description{};
+  std::vector<Argument> arguments{};
+  /// Its icons, as the server wrote them, if it gave any.
+  std::optional<scrydantic::Json> icons{};
+  /// Its `_meta` object, as the server wrote it, if it gave one.
+  std::optional<scrydantic::Json> meta{};
+};
+
+/// A prompt as the server rendered it for some arguments, from `prompts/get`.
+struct PromptResult {
+  /// What the prompt is, or empty when the server did not say.
+  std::string description{};
+  /// The messages, in order.
+  std::vector<PromptMessage> messages{};
+};
+
+/// Names a prompt whose argument complete() completes.
+struct PromptReference {
+  std::string name{};
+};
+
+/// Names a resource template whose variable complete() completes, by its URI
+/// template as the server lists it.
+struct ResourceTemplateReference {
+  std::string uri{};
+};
+
+/// What a server suggests for an argument, from `completion/complete`.
+struct Completion {
+  /// The suggestions, the most fitting first.
+  std::vector<std::string> values{};
+  /// How many suggestions there are in all, if the server knows.
+  std::optional<std::int64_t> total{};
+  /// Whether there are more suggestions than `values` holds.
+  bool has_more{};
+};
+
 namespace detail {
 
 // What a typed call of `function` returns: the function's value type, with a
@@ -252,6 +383,81 @@ consteval std::meta::info call_value_of(const std::meta::info function) {
 // else the one text block, read as JSON. When `text` is set, the caller wants a
 // string, which a text block that is not a JSON string is as it is.
 [[nodiscard]] Reply<scrydantic::Json> typed_source(const ToolResult& result, bool text);
+
+// Whether a function carries an annotation of this type.
+consteval bool carries(const std::meta::info function,
+                       const std::meta::info annotation) {
+  return std::meta::is_function(function) &&
+         !std::meta::annotations_of_with_type(function, annotation).empty();
+}
+
+// The annotation that a function carries, or `none` when it carries none, so
+// that a static_assert alone reports the mistake.
+template <typename Annotation>
+consteval Annotation carried(const std::meta::info function, const Annotation none) {
+  return carries(function, ^^Annotation) ? annotation_of<Annotation>(function) : none;
+}
+
+// Why a typed read cannot read `function`, or empty.
+template <typename Arguments>
+consteval std::string_view read_problem(const std::meta::info function) {
+  if (!carries(function, ^^resource)) {
+    return "read<^^f>() reads a function that carries mcp::resource";
+  }
+  return resource_problem<Arguments>(annotation_of<resource>(function).uri.view());
+}
+
+// What a typed read of `function` returns: the function's value type, with a
+// Result unwrapped.
+consteval std::meta::info read_value_of(const std::meta::info function) {
+  return std::meta::is_function(function) ? call_value_of(function) : ^^void;
+}
+
+// The URI of a template with its variables filled in from `arguments`, a JSON
+// object of the variables' values: `{name}` percent-encoded, `{+name}` as it
+// is. The URI is one that match_uri_template() reads back to the same values.
+[[nodiscard]] Reply<std::string> expand_uri(std::string_view uri_template,
+                                            const scrydantic::Json& arguments);
+// The text of each member of `arguments`, a JSON object, as a prompt takes
+// it: a string as it is, a number or a boolean as JSON spells it. A member
+// that is null is left out.
+[[nodiscard]] Reply<std::map<std::string, std::string>>
+argument_texts(const scrydantic::Json& arguments);
+// What a resource holds, from the one item of its contents: its text, its
+// bytes, or the item itself.
+[[nodiscard]] Reply<std::string> resource_text(std::vector<ResourceContents> contents);
+[[nodiscard]] Reply<std::vector<std::byte>>
+resource_bytes(const std::vector<ResourceContents>& contents);
+[[nodiscard]] Reply<ResourceContents>
+resource_item(std::vector<ResourceContents> contents);
+
+// A value of type T from the contents of a resource, as the server's binding
+// makes the contents from the value of a function: the inverse of
+// detail::resource_contents.
+template <typename T> Reply<T> resource_value(std::vector<ResourceContents> contents) {
+  if constexpr (std::is_same_v<T, std::vector<ResourceContents>>) {
+    return contents;
+  } else if constexpr (std::is_same_v<T, ResourceContents>) {
+    return resource_item(std::move(contents));
+  } else if constexpr (std::is_same_v<T, std::vector<std::byte>>) {
+    return resource_bytes(contents);
+  } else {
+    Reply<std::string> text = resource_text(std::move(contents));
+    if constexpr (std::is_same_v<T, std::string>) {
+      return text;
+    } else {
+      if (!text) {
+        return std::unexpected(std::move(text).error());
+      }
+      scrydantic::Result<T> value =
+          scrydantic::decode<T>(scrydantic::Json{std::move(*text)});
+      if (!value) {
+        return std::unexpected(mismatched(value.error()));
+      }
+      return std::move(*value);
+    }
+  }
+}
 
 } // namespace detail
 
@@ -358,6 +564,147 @@ public:
     return call<typename[:detail::call_value_of(Function):]>(described[0].name,
                                                              arguments, options);
   }
+
+  /// The resources the server offers, from every page of its list. A list
+  /// that does not end within 1000 pages fails with Fault::protocol.
+  Reply<std::vector<Resource>> list_resources(const CallOptions& options = {});
+
+  /// The resource templates the server offers, from every page of their list,
+  /// as list_resources() reads it.
+  Reply<std::vector<ResourceTemplate>>
+  list_resource_templates(const CallOptions& options = {});
+
+  /// Reads a resource by its URI.
+  ///
+  /// A URI the server has no resource for is Fault::rejected with the server's
+  /// code: -32602 under 2026-07-28 and -32002 before it, as the revisions
+  /// define it, usually with the URI in the error's data.
+  /// @return The contents, each text or a blob, in the server's order.
+  Reply<std::vector<ResourceContents>> read_resource(std::string_view uri,
+                                                     const CallOptions& options = {});
+
+  /// Reads a resource by its URI, as a C++ type of the caller's choosing.
+  ///
+  /// The contents are read as the server's binding writes what a resource
+  /// function returns: a `std::string` is the text of the one item, a
+  /// `std::vector<std::byte>` the bytes of its blob, an mcp::ResourceContents
+  /// the item itself, a vector of them every item, and any other type the text
+  /// read as JSON. Contents that do not fit are Fault::mismatch.
+  template <typename T>
+  Reply<T> read(const std::string_view uri, const CallOptions& options = {}) {
+    Reply<std::vector<ResourceContents>> contents = read_resource(uri, options);
+    if (!contents) {
+      return std::unexpected(std::move(contents).error());
+    }
+    return detail::resource_value<T>(std::move(*contents));
+  }
+
+  /// Reads a resource by its declaration, which a header shared with the
+  /// server provides; the function need not be defined in the client's
+  /// program.
+  ///
+  /// The URI is the declaration's, with each variable of a template filled in
+  /// from the argument of the same name: `{name}` percent-encoded, and
+  /// `{+name}` as it is, so that the server's matcher reads back the same
+  /// values. Arguments that the URI cannot carry, such as an object, an empty
+  /// value, or a `{+name}` value that would read back otherwise, fail with
+  /// Fault::protocol, unsent. The result is what the function returns, a
+  /// Result unwrapped, read as read<T>() reads it.
+  /// @tparam Function Reflection of a function that carries mcp::resource.
+  /// @tparam Binding Leave defaulted: the function as the calling translation
+  /// unit declares it.
+  template <std::meta::info Function,
+            typename Binding = typename[:scrydantic::binding_of(Function, ^^Context):]>
+  Reply<typename[:detail::read_value_of(Function):]>
+  read(const scrydantic::arguments_t<Function, Context, Binding>& arguments,
+       const CallOptions& options = {}) {
+    using Arguments = scrydantic::arguments_t<Function, Context, Binding>;
+    static_assert(detail::read_problem<Arguments>(Function).empty(),
+                  detail::read_problem<Arguments>(Function));
+    static constexpr mcp::resource annotation =
+        detail::carried(Function, mcp::resource{.uri = ""});
+    scrydantic::Result<scrydantic::Json> encoded = scrydantic::encode(arguments);
+    if (!encoded) {
+      return std::unexpected(detail::unsendable(encoded.error()));
+    }
+    Reply<std::string> uri = detail::expand_uri(annotation.uri.view(), *encoded);
+    if (!uri) {
+      return std::unexpected(std::move(uri).error());
+    }
+    return read<typename[:detail::read_value_of(Function):]>(*uri, options);
+  }
+
+  /// The prompts the server offers, from every page of their list, as
+  /// list_resources() reads it.
+  Reply<std::vector<Prompt>> list_prompts(const CallOptions& options = {});
+
+  /// Renders a prompt by name.
+  /// @param name The prompt's name.
+  /// @param arguments The prompt's arguments, each a string, by name.
+  /// @return The prompt's messages, or why it could not be rendered: a name or
+  /// arguments the server rejects is Fault::rejected, usually with -32602.
+  Reply<PromptResult>
+  get_prompt(std::string_view name,
+             const std::map<std::string, std::string>& arguments = {},
+             const CallOptions& options = {});
+
+  /// Renders a prompt by its declaration, which a header shared with the
+  /// server provides; the function need not be defined in the client's
+  /// program.
+  ///
+  /// The prompt's name is the declaration's, and its arguments are the
+  /// parameters the server does not supply itself, each sent as the text the
+  /// server's binding reads back: a string as it is, and a number or a boolean
+  /// as JSON spells it. An argument left empty, as a default argument may be,
+  /// is not sent. One that is not text, a number or a boolean fails with
+  /// Fault::protocol, unsent.
+  /// @tparam Function Reflection of a function that carries mcp::prompt.
+  /// @tparam Binding Leave defaulted: the function as the calling translation
+  /// unit declares it.
+  template <std::meta::info Function,
+            typename Binding = typename[:scrydantic::binding_of(Function, ^^Context):]>
+  Reply<PromptResult>
+  prompt(const scrydantic::arguments_t<Function, Context, Binding>& arguments,
+         const CallOptions& options = {}) {
+    static_assert(detail::carries(Function, ^^mcp::prompt),
+                  "prompt<^^f>() renders a function that carries mcp::prompt");
+    static constexpr std::string_view name = detail::name_or(
+        detail::carried(Function, mcp::prompt{.description = ""}).name.view(),
+        Function);
+    scrydantic::Result<scrydantic::Json> encoded = scrydantic::encode(arguments);
+    if (!encoded) {
+      return std::unexpected(detail::unsendable(encoded.error()));
+    }
+    Reply<std::map<std::string, std::string>> texts = detail::argument_texts(*encoded);
+    if (!texts) {
+      return std::unexpected(std::move(texts).error());
+    }
+    return get_prompt(name, *texts, options);
+  }
+
+  /// Asks the server to suggest values for an argument of a prompt, as a
+  /// person types it.
+  /// @param prompt The prompt.
+  /// @param argument The argument's name.
+  /// @param value What has been typed so far.
+  /// @param context The prompt's other arguments that are chosen already, by
+  /// name.
+  Reply<Completion> complete(const PromptReference& prompt, std::string_view argument,
+                             std::string_view value,
+                             const std::map<std::string, std::string>& context = {},
+                             const CallOptions& options = {});
+
+  /// Asks the server to suggest values for a variable of a resource template,
+  /// as a person types it.
+  /// @param resource The template.
+  /// @param variable The variable's name.
+  /// @param value What has been typed so far.
+  /// @param context The template's other variables that are chosen already,
+  /// by name.
+  Reply<Completion> complete(const ResourceTemplateReference& resource,
+                             std::string_view variable, std::string_view value,
+                             const std::map<std::string, std::string>& context = {},
+                             const CallOptions& options = {});
 
 private:
   struct State;
