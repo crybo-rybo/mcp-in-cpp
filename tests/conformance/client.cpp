@@ -118,6 +118,21 @@ bool run(mcp::Client& client, const std::string_view scenario) {
     for (const mcp::Tool& tool : *tools) {
       ok = call(client, tool.name) && ok;
     }
+    if (scenario == "http-standard-headers") {
+      // The headers of the other requests that name something: every resource
+      // is read, and every prompt rendered.
+      const mcp::Reply<std::vector<mcp::Resource>> resources = client.list_resources();
+      ok = check("resources/list", resources) && ok;
+      for (std::size_t index = 0; resources && index < resources->size(); ++index) {
+        ok = check("resources/read", client.read_resource((*resources)[index].uri)) &&
+             ok;
+      }
+      const mcp::Reply<std::vector<mcp::Prompt>> prompts = client.list_prompts();
+      ok = check("prompts/list", prompts) && ok;
+      for (std::size_t index = 0; prompts && index < prompts->size(); ++index) {
+        ok = check("prompts/get", client.get_prompt((*prompts)[index].name)) && ok;
+      }
+    }
     return ok;
   }
   if (scenario == "sep-2322-client-request-state") {

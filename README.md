@@ -1,7 +1,7 @@
 # mcp-in-cpp
 
-An MCP server library for C++26. A tool, a resource, and a prompt are each a
-plain function: static reflection reads a tool's parameters into the input
+An MCP server and client library for C++26. A tool, a resource, and a prompt are
+each a plain function: static reflection reads a tool's parameters into the input
 schema, its return type into the output schema, and its annotations into the
 descriptions a model sees. There are no macros, no code generator, and no
 schema written by hand.
@@ -42,12 +42,56 @@ JSON arguments. This library supplies the protocol. The annotations under
 [guide](https://github.com/crybo-rybo/scrydantic/blob/main/docs/guide.md) is
 the reference for them and for what a tool may take and return.
 
+## The client
+
+`mcp::Client` is the connection to one server, of either protocol era. It calls
+a tool by name with JSON, as a model's host does, or through the same
+declaration the server binds, as a typed C++ function. A header that declares
+the `weather` namespace above is all the client needs: the functions are
+defined only in the server.
+
+```cpp
+#include <mcp/client.hpp>
+
+int main() {
+  // Start a server as a child process and talk to it over stdio.
+  mcp::Reply<mcp::Client> client =
+      mcp::launch({.command = "weather-server"}, {.name = "zoo", .version = "1.0.0"});
+  if (!client) {
+    return 1;  // client.error() says why
+  }
+
+  // By name: schemas and arguments stay JSON, for a model.
+  mcp::Reply<std::vector<mcp::Tool>> tools = client->list_tools();
+  mcp::Reply<mcp::ToolResult> result =
+      client->call_tool("forecast", mcp::Json{R"({"city":"Oslo","days":3})"});
+
+  // By declaration: the name, the arguments and the result's type are the function's.
+  mcp::Reply<weather::Forecast> forecast =
+      client->call<^^weather::forecast>({.city = "Oslo", .days = 3});
+  mcp::Reply<std::vector<weather::Alert>> alerts =
+      client->read<^^weather::alerts>({.city = "Oslo"});
+  mcp::Reply<mcp::PromptResult> plan =
+      client->prompt<^^weather::plan_trip>({.city = "Oslo"});
+}
+```
+
+Every call returns a `mcp::Reply`: the value, or a `mcp::ClientError` whose
+`fault` says what failed. Nothing throws. Calls block, may be made from several
+threads, stop on a `std::stop_token`, and have a time limit.
+[`examples/client.cpp`](examples/client.cpp) is a complete client for any stdio
+server.
+
 ## Status
 
-A complete server of both protocol eras, over stdio and Streamable HTTP. It
-passes every scored scenario of the official
+A complete server of both protocol eras, over stdio and Streamable HTTP, and a
+client of both. The server passes every scored scenario of the official
 [conformance suite](https://github.com/modelcontextprotocol/conformance) for
-2026-07-28 and for 2025-11-25. It is young, and its API can change before 1.0.
+2026-07-28 and for 2025-11-25. The client passes the suite's scenarios but
+those of authorization, and two of 2025-11-25 that need a session's GET stream.
+It is young, and its API can change before 1.0.
+
+The server:
 
 | | |
 |---|---|
@@ -66,7 +110,23 @@ passes every scored scenario of the official
 | Transport | stdio: `mcp::serve_stdio`. Streamable HTTP: `mcp::HttpEndpoint`, behind an HTTP server the program already has; `<mcp/httplib.hpp>` mounts it on cpp-httplib. `mcp::Connection::handle` takes one message and returns the response, and may be called from several threads, for a transport of your own. |
 | HTTP | 2026-07-28 statelessly, with its routing headers checked (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name`) and a closed stream as cancellation. The handshake revisions in sessions named by `Mcp-Session-Id`, cancelled by notification. A response is JSON, or an event stream once the call sends a notification. `Host` and `Origin` are checked against the local machine's names by default. |
 
-Not there yet: notifications on 2026-07-28's `subscriptions/listen`, URL elicitation, authorization, and a client.
+The client:
+
+| | |
+|---|---|
+| Opening | `mcp::launch` starts a server as a child process (POSIX), `mcp::connect(in, out)` talks over two streams, `mcp::connect(url, http)` over Streamable HTTP, and `mcp::connect(server)` to an `mcp::Server` in the same process, for its tests. `mcp::Client::open` takes any `mcp::Channel`, for a transport of your own. |
+| Protocol | Whichever era the server speaks. The client asks with `server/discover` under 2026-07-28 and falls back to the `initialize` handshake as the specification says; a server that is slow to start is sent both, and the first to succeed decides. `ClientOptions::era` pins one. |
+| Calls | `list_tools`, `call_tool`, `list_resources`, `list_resource_templates`, `read_resource`, `list_prompts`, `get_prompt`, `complete`, `ping`. Lists follow their cursors to the end. Schemas, structured content and error data are kept as the server wrote them, and a `$ref` is never fetched. |
+| Typed calls | `call<T>(name, arguments)` and `read<T>(uri)` with the caller's own types, and `call<^^fn>`, `read<^^fn>`, `prompt<^^fn>` by a declaration shared with the server. A typed read fills the declared URI template from its arguments. A tool's own error is a result in `call_tool` and `Fault::tool` in a typed call. |
+| What a server asks | A handler in `ClientOptions` for `elicitation`, `sampling` or `roots` declares its capability and answers in both eras. Under 2026-07-28 the client answers `input_required` inside the call and sends the request again, with the server's `requestState`, for a bounded number of rounds. A field that an accepted form leaves out is sent with its schema's default. |
+| Each call | `CallOptions` gives a progress function, a `std::stop_token`, a time limit (60 seconds by default, started again by progress, and standing still while a handler runs), and under 2026-07-28 a log level. `ClientOptions::log` receives the server's log messages. |
+| stdio | A launched server inherits only its standard streams. Closing the client closes the server's input, then sends SIGTERM, then SIGKILL, each after a grace period, and reaps it. A server that exits fails the waiting calls with how it exited. |
+| HTTP | Through the HTTP client the program has, behind `mcp::HttpClient`; `<mcp/httplib_client.hpp>` implements it over cpp-httplib. 2026-07-28's routing headers, with a tool's `x-mcp-header` arguments mirrored into `Mcp-Param-*`; sessions for the handshake revisions. A 401 is `Fault::unauthorized` with the server's challenge, and `HttpConnectOptions::bearer` supplies a token for each request. |
+
+Not there yet: notifications on 2026-07-28's `subscriptions/listen` and the
+client's side of change subscriptions, the handshake session's GET stream in
+the client, URL elicitation, authorization (OAuth), and launching a server on
+Windows.
 
 ## Requirements
 
@@ -91,9 +151,9 @@ Each step is a script of its own, and CI runs the same scripts:
 |---|---|
 | `scripts/format.sh [--fix]` | Checks the C++ sources against `.clang-format` with clang-format 22.1.4, or formats them |
 | `scripts/build.sh <preset>` | Configures, builds, and runs the tests of `dev`, `release`, `asan`, or `tsan` |
-| `scripts/interop.sh <preset>` | Drives the example server through the official Python client (mcp 2.3.0), over stdio and HTTP, in both eras |
+| `scripts/interop.sh <preset>` | Checks against the official Python SDK (mcp 2.3.0) in both eras: its client drives the example server over stdio and HTTP, and this library's client drives a server written with it over stdio |
 | `scripts/install-check.sh <preset>` | Installs the package, and builds and runs `tests/install` against it |
-| `scripts/conformance.sh <preset>` | Runs the official [conformance suite](https://github.com/modelcontextprotocol/conformance) against `tests/conformance/fixture.cpp`, under 2026-07-28 and 2025-11-25 |
+| `scripts/conformance.sh <preset>` | Runs the official [conformance suite](https://github.com/modelcontextprotocol/conformance) against the server in `tests/conformance/fixture.cpp` and the client in `tests/conformance/client.cpp`, under 2026-07-28 and 2025-11-25 |
 
 The scripts use `g++-16` when `g++` is not GCC 16, or the compiler `CXX`
 names. They install clang-format and the Python SDK into `build/tools` the
@@ -148,7 +208,20 @@ mcp::mount(http, "/mcp", endpoint);
 http.listen("127.0.0.1", 8000);
 ```
 
-The library does not depend on cpp-httplib; `<mcp/httplib.hpp>` is for a
+A client reaches a Streamable HTTP server through an `mcp::HttpClient` of your
+own, or through cpp-httplib:
+
+```cpp
+#include <httplib.h>
+#include <mcp/httplib_client.hpp>
+
+mcp::HttplibClient http;
+mcp::Reply<mcp::Client> client =
+    mcp::connect("http://127.0.0.1:8000/mcp", http, {.name = "zoo", .version = "1.0.0"});
+```
+
+An `https` URL needs cpp-httplib built with TLS. The library does not depend on
+cpp-httplib; `<mcp/httplib.hpp>` and `<mcp/httplib_client.hpp>` are for a
 program that does.
 
 ## License

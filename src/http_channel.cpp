@@ -132,7 +132,7 @@ find_header(const std::span<const HttpHeader> headers, const std::string_view na
 
 // What a fault's message says of a body: the message of the JSON-RPC error it
 // holds, or its text when that is short printable ASCII.
-[[nodiscard]] std::string quoted(const std::string_view body) {
+[[nodiscard]] std::string said_in(const std::string_view body) {
   if (const scrydantic::Result<JsonView> document = JsonView::parse(body);
       document && document->kind() == JsonKind::object) {
     const std::optional<JsonView> error = document->find("error");
@@ -515,9 +515,9 @@ void HttpChannel::settle(Exchange& exchange, Receiver& receiver,
                     join({"the server's HTTP ", code,
                           " response does not hold the request's answer"}));
   } else if (client_error) {
-    why = fault(Fault::protocol, join({"HTTP ", code, quoted(receiver.body)}));
+    why = fault(Fault::protocol, join({"HTTP ", code, said_in(receiver.body)}));
   } else {
-    why = fault(Fault::transport, join({"HTTP ", code, quoted(receiver.body)}));
+    why = fault(Fault::transport, join({"HTTP ", code, said_in(receiver.body)}));
   }
   incoming_->failed(id, std::move(why));
 }
