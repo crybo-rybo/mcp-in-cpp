@@ -107,10 +107,12 @@ add_library(
   src/content.cpp
   src/dispatcher.cpp
   src/http.cpp
+  src/launch.cpp
   src/loopback.cpp
   src/server.cpp
   src/sha256.cpp
   src/stdio.cpp
+  src/stdio_client.cpp
 )
 add_library(mcp::mcp ALIAS mcp)
 file(GLOB MCP_PUBLIC_HEADERS CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/include/mcp/*.hpp")

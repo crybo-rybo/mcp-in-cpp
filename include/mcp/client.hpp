@@ -25,7 +25,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
 #include <functional>
+#include <iosfwd>
 #include <mcp/ask.hpp>
 #include <mcp/channel.hpp>
 #include <mcp/content.hpp>
@@ -374,5 +376,114 @@ private:
 /// @return The open client, or why it could not open, such as a server whose
 /// status() has failed.
 [[nodiscard]] Reply<Client> connect(const Server& server, ClientOptions options = {});
+
+// The stdio transport.
+
+/// The longest line a client reads from a server over stdio by default, in
+/// bytes: 64 MiB, room for a large image or file in one message.
+inline constexpr std::size_t default_max_line = std::size_t{64} << 20U;
+
+/// Opens a client to a server over a pair of streams, one message per line each
+/// way: the client's side of serve_stdio(). The streams must outlive the
+/// client.
+///
+/// A thread of the client's reads `in`. Each message goes to `out` as one line,
+/// flushed, one at a time, from whichever thread sends it. When `in` ends, or a
+/// read or write of the streams fails, every call that waits fails with
+/// Fault::transport, and so does every later one. A line longer than `max_line`
+/// bytes, not counting its line break, ends the client the same way, and what
+/// follows it is read and passed over.
+///
+/// Closing the client, as its destructor does, stops it from taking what `in`
+/// holds and from writing to `out`. A read in progress on a stream the client
+/// does not own cannot be interrupted, though, so the destructor returns only
+/// once `in` has ended, at its end or at a failure; a connect() that fails to
+/// open waits the same way. End the server's output before destroying the
+/// client, such as by ending its input first, which serve_stdio() answers by
+/// returning.
+///
+/// Writing to a pipe or a socket whose reader has gone may raise SIGPIPE, which
+/// is for the owner of `out` to handle; launch() handles it for its own pipes.
+/// @return The open client, or why it could not open.
+[[nodiscard]] Reply<Client> connect(std::istream& in, std::ostream& out,
+                                    ClientOptions options = {},
+                                    std::size_t max_line = default_max_line);
+
+/// What becomes of what a launched server writes to its stderr.
+enum class Stderr : std::uint8_t {
+  /// It goes where the client's own stderr goes.
+  inherit,
+  /// It is thrown away.
+  discard,
+  /// Each line goes to Command::stderr_line.
+  lines,
+};
+
+/// A variable of a launched server's environment.
+struct EnvironmentVariable {
+  std::string name;
+  std::string value{};
+};
+
+/// How to start a server as a process of its own, which a client talks to over
+/// its stdin and stdout.
+struct Command {
+  /// The program. One without a slash is looked up on the client's PATH, as a
+  /// shell looks it up; one with a slash is a path, relative to `directory`
+  /// when that is set.
+  std::string command;
+  /// The arguments after the program's name.
+  std::vector<std::string> arguments{};
+  /// Variables added to the environment the server inherits from the client,
+  /// each in place of one of the same name.
+  std::vector<EnvironmentVariable> environment{};
+  /// The directory the server starts in, or empty for the client's own.
+  std::filesystem::path directory{};
+  /// What becomes of what the server writes to its stderr.
+  Stderr stderr_output{Stderr::inherit};
+  /// Under Stderr::lines, receives each line the server writes to its stderr,
+  /// without its line break, on a thread of the client's. The server's messages
+  /// wait while it runs, so it should return soon, and it must not call the
+  /// client. A line longer than `max_line` comes cut to that length. When it
+  /// is empty, the lines are read and thrown away.
+  std::function<void(std::string_view line)> stderr_line{};
+  /// How long the server has to exit once its input is closed, and again after
+  /// SIGTERM, before it is killed.
+  std::chrono::milliseconds grace{std::chrono::seconds{2}};
+  /// The longest line read from the server, as connect() over streams bounds
+  /// it.
+  std::size_t max_line{default_max_line};
+};
+
+/// Starts a server as a child process and opens a client to it over the
+/// process's stdin and stdout (POSIX only).
+///
+/// The server inherits the client's environment, with Command::environment
+/// added, and no file descriptor of the client's but its three standard
+/// streams. It leads a process group of its own, so that a signal from the
+/// client's terminal, such as Ctrl-C, is the client's to pass on.
+///
+/// When the server exits or closes its output, every call that waits fails
+/// with Fault::transport, which says how it exited, and so does every later
+/// one; the client does not start the server again. Writing to a server that
+/// has gone fails the call in the same way, without raising SIGPIPE, and
+/// without changing how the program handles SIGPIPE.
+///
+/// Destroying the client ends the server as the protocol says: it closes the
+/// server's input and waits Command::grace for it to exit, then sends SIGTERM
+/// to its process group and waits again, then sends the group SIGKILL. A server
+/// that exits at the end of its input, as serve_stdio() does, is sent no signal.
+/// The server is always reaped, so it leaves no zombie; a program that reaps
+/// every child itself, or ignores SIGCHLD, leaves the client unable to say how
+/// a server exited.
+///
+/// A server that is slow to start, as one started through npx or uvx can be,
+/// still opens in its own era: under Era::automatic, `initialize` follows
+/// `server/discover` after ClientOptions::probe_timeout, and the first answer
+/// to succeed decides. Each request, those of opening too, may take up to
+/// ClientOptions::timeout, so a server must start within that.
+/// @return The open client, or why it could not open, such as a program that
+/// cannot be started, with the reason.
+[[nodiscard]] Reply<Client> launch(Command command, ClientOptions options = {});
 
 } // namespace mcp

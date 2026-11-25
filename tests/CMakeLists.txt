@@ -17,6 +17,7 @@ add_executable(
   mcp_tests
   ask_tests.cpp
   client_ask_tests.cpp
+  client_stdio_tests.cpp
   client_tests.cpp
   crypto_tests.cpp
   envelope_tests.cpp
@@ -39,6 +40,49 @@ target_link_libraries(
 target_include_directories(mcp_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 catch_discover_tests(mcp_tests TEST_PREFIX "mcp.")
 
+# The programs the tests of the stdio client start, named in a header of their
+# own, and empty when the examples are not built.
+set(MCP_WEATHER_EXAMPLE "")
+if(TARGET mcp_weather_example)
+  set(MCP_WEATHER_EXAMPLE "$<TARGET_FILE:mcp_weather_example>")
+  add_dependencies(mcp_tests mcp_weather_example)
+endif()
+file(
+  GENERATE
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/programs.hpp"
+  CONTENT
+    "// The programs the tests start, as CMake builds them, or empty.
+#pragma once
+
+#include <string_view>
+
+namespace programs {
+
+inline constexpr std::string_view weather{\"${MCP_WEATHER_EXAMPLE}\"};
+
+} // namespace programs
+"
+)
+target_include_directories(mcp_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
+# The example client, calling a tool of the example server.
+if(TARGET mcp_client_example AND TARGET mcp_weather_example)
+  add_test(
+    NAME mcp.example.client
+    COMMAND
+      mcp_client_example forecast [[{"city":"Oslo"}]]
+      "$<TARGET_FILE:mcp_weather_example>"
+  )
+  set_tests_properties(
+    mcp.example.client
+    PROPERTIES PASS_REGULAR_EXPRESSION [[\{"sky":"clear","temperature":20\.5\}]]
+  )
+endif()
+
+# Drives a server written with the official Python SDK, which
+# scripts/interop.sh starts.
+add_executable(mcp_interop_client interop/client.cpp)
+target_link_libraries(mcp_interop_client PRIVATE mcp::mcp mcp_project_options)
 
 # The server the official conformance suite tests, over HTTP.
 add_executable(mcp_conformance_fixture conformance/fixture.cpp)
