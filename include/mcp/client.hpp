@@ -494,9 +494,18 @@ public:
 
   /// The tools the server offers, from every page of its list. A list that
   /// does not end within 1000 pages fails with Fault::protocol.
+  ///
+  /// Under 2026-07-28 the client keeps what the list says of each tool's
+  /// arguments that a request mirrors into headers (`x-mcp-header`), and
+  /// leaves out a tool whose marks break the protocol's rules.
   Reply<std::vector<Tool>> list_tools(const CallOptions& options = {});
 
   /// Calls a tool by name.
+  ///
+  /// Under 2026-07-28 the arguments that the last tool list marked go in
+  /// headers too, and a tool that list left out fails with Fault::protocol,
+  /// unsent. When the server turns the call away for its headers (-32020),
+  /// the client lists the tools again and sends the call once more.
   /// @param name The tool's name.
   /// @param arguments The arguments: a JSON object, which is sent as it is
   /// written. Anything else fails with Fault::protocol, unsent.

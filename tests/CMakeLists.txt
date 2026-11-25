@@ -23,6 +23,8 @@ add_executable(
   crypto_tests.cpp
   envelope_tests.cpp
   feature_tests.cpp
+  http_client_tests.cpp
+  http_socket_tests.cpp
   http_tests.cpp
   legacy_tests.cpp
   logging_tests.cpp
@@ -30,13 +32,14 @@ add_executable(
   loopback_feature_tests.cpp
   loopback_tests.cpp
   modern_tests.cpp
+  routing_tests.cpp
   stdio_tests.cpp
   tool_call_tests.cpp
   verbatim_tests.cpp
 )
 target_link_libraries(
   mcp_tests
-  PRIVATE mcp::mcp mcp_project_options Catch2::Catch2WithMain
+  PRIVATE mcp::mcp mcp_project_options Catch2::Catch2WithMain httplib::httplib
 )
 # The tests of the library's own parts, such as its SHA-256, read its sources.
 target_include_directories(mcp_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
@@ -90,5 +93,12 @@ target_link_libraries(mcp_interop_client PRIVATE mcp::mcp mcp_project_options)
 add_executable(mcp_conformance_fixture conformance/fixture.cpp)
 target_link_libraries(
   mcp_conformance_fixture
+  PRIVATE mcp::mcp httplib::httplib mcp_project_options
+)
+
+# The client the official conformance suite tests, over HTTP.
+add_executable(mcp_conformance_client conformance/client.cpp)
+target_link_libraries(
+  mcp_conformance_client
   PRIVATE mcp::mcp httplib::httplib mcp_project_options
 )

@@ -108,8 +108,10 @@ add_library(
   src/dispatcher.cpp
   src/features.cpp
   src/http.cpp
+  src/http_channel.cpp
   src/launch.cpp
   src/loopback.cpp
+  src/routing.cpp
   src/server.cpp
   src/sha256.cpp
   src/stdio.cpp

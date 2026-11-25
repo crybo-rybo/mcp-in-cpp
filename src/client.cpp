@@ -1,6 +1,7 @@
 #include "answer.hpp"
 #include "features.hpp"
 #include "jsonrpc.hpp"
+#include "routing.hpp"
 #include "verbatim.hpp"
 #include "wire.hpp"
 
@@ -21,10 +22,12 @@
 #include <mcp/channel.hpp>
 #include <mcp/client.hpp>
 #include <mcp/context.hpp>
+#include <mcp/http.hpp>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -32,6 +35,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -272,10 +276,21 @@ struct Client::State final : Incoming {
   // Agrees on an era with the server, as ClientOptions::era says.
   Reply<void> handshake();
 
-  // Sends a request and waits for its result.
+  // Sends a request and waits for its result. `headers` go to a transport
+  // that has them.
   template <typename Params>
   Reply<Response> request(std::string_view method, Params params, std::string_view name,
-                          const CallOptions& call);
+                          const CallOptions& call,
+                          std::span<const HttpHeader> headers = {});
+
+  // Under 2026-07-28, keeps what a tool list says of the arguments that each
+  // tool mirrors into headers, and leaves out the tools whose marks break the
+  // rules.
+  void route(std::vector<Tool>& tools);
+  // The headers of a call of this tool, as the last tool list marked its
+  // arguments, or nothing when that list left the tool out.
+  [[nodiscard]] std::optional<std::vector<HttpHeader>>
+  routed(std::string_view tool, std::string_view arguments) const;
 
   // Ends the client: every waiting call fails, the handlers that run return,
   // and the channel closes.
@@ -335,7 +350,8 @@ private:
   template <typename Params>
   Reply<std::shared_ptr<Pending>> start(std::string_view method, Params params,
                                         std::string_view name, const CallOptions& call,
-                                        Revision revision);
+                                        Revision revision,
+                                        std::span<const HttpHeader> headers = {});
   // How a wait ended.
   enum class Waited : std::uint8_t { done, until, cancelled, timeout };
   // Waits until the request has finished, or until `until` if it is given, or
@@ -402,6 +418,10 @@ private:
   std::size_t pauses_{};
   Clock::time_point paused_since_{};
   Helpers helpers_;
+  // What the last tool list marked of each tool's arguments for headers, and
+  // the tools it left out for marks that break the rules.
+  std::unordered_map<std::string, std::vector<routing::Param>> routes_;
+  std::unordered_set<std::string> unroutable_;
 };
 
 namespace {
@@ -611,7 +631,8 @@ template <typename Params>
 Reply<std::shared_ptr<Pending>>
 Client::State::start(const std::string_view method, Params params,
                      const std::string_view name, const CallOptions& call,
-                     const Revision revision) {
+                     const Revision revision,
+                     const std::span<const HttpHeader> headers) {
   const std::uint64_t id = next_id_.fetch_add(1, std::memory_order_relaxed) + 1;
   const std::string id_text = std::to_string(id);
   wire::RequestMeta meta{};
@@ -657,7 +678,7 @@ Client::State::start(const std::string_view method, Params params,
                                                   .method = method,
                                                   .name = name,
                                                   .protocol_version = revision.version,
-                                                  .headers = {}});
+                                                  .headers = headers});
   if (!sent) {
     take(*pending);
     return std::unexpected(sent.error());
@@ -788,7 +809,8 @@ Reply<Response> Client::State::finish(const std::shared_ptr<Pending>& pending,
 template <typename Params>
 Reply<Response> Client::State::request(const std::string_view method, Params params,
                                        const std::string_view name,
-                                       const CallOptions& call) {
+                                       const CallOptions& call,
+                                       const std::span<const HttpHeader> headers) {
   const auto cancelled = [method] {
     return std::unexpected(fault(Fault::cancelled, join({method, " was cancelled"})));
   };
@@ -804,7 +826,7 @@ Reply<Response> Client::State::request(const std::string_view method, Params par
   for (std::size_t round = 0;; ++round) {
     // Each round is a request of its own, with an id of its own.
     Reply<std::shared_ptr<Pending>> pending =
-        start(method, params, name, call, sent_as);
+        start(method, params, name, call, sent_as, headers);
     if (!pending) {
       return std::unexpected(std::move(pending).error());
     }
@@ -1451,6 +1473,51 @@ Reply<void> Client::State::race_handshake(const std::shared_ptr<Pending>& probe,
       Fault::timeout, "the server answered neither server/discover nor initialize"));
 }
 
+// The headers of tool calls.
+
+void Client::State::route(std::vector<Tool>& tools) {
+  if (!revision().modern) {
+    // Only 2026-07-28 mirrors arguments into headers.
+    return;
+  }
+  std::unordered_map<std::string, std::vector<routing::Param>> routes;
+  std::unordered_set<std::string> unroutable;
+  // A tool whose marks break the rules cannot be called as the protocol
+  // requires, so it is left out; the others stay.
+  std::erase_if(tools, [&](const Tool& tool) {
+    std::expected<std::vector<routing::Param>, std::string> params =
+        routing::params_of(tool.input_schema.text);
+    if (!params) {
+      unroutable.insert(tool.name);
+      return true;
+    }
+    if (!params->empty()) {
+      routes.try_emplace(tool.name, std::move(*params));
+    }
+    return false;
+  });
+  const std::scoped_lock lock{mutex_};
+  routes_ = std::move(routes);
+  unroutable_ = std::move(unroutable);
+}
+
+std::optional<std::vector<HttpHeader>>
+Client::State::routed(const std::string_view tool,
+                      const std::string_view arguments) const {
+  std::vector<routing::Param> params;
+  {
+    const std::scoped_lock lock{mutex_};
+    const std::string name{tool};
+    if (unroutable_.contains(name)) {
+      return std::nullopt;
+    }
+    if (const auto found = routes_.find(name); found != routes_.end()) {
+      params = found->second;
+    }
+  }
+  return routing::headers_for(params, arguments);
+}
+
 // The client.
 
 namespace {
@@ -1610,6 +1677,7 @@ Reply<std::vector<Tool>> Client::list_tools(const CallOptions& options) {
     }
     const std::optional<JsonView> next = response->result.find("nextCursor");
     if (!next.has_value() || next->kind() == JsonKind::null) {
+      state_->route(tools);
       return tools;
     }
     if (!next->string().has_value()) {
@@ -1634,18 +1702,39 @@ Reply<ToolResult> Client::call_tool(const std::string_view name, const Json& arg
         fault(Fault::protocol, "the arguments of a tool call must be a JSON object"));
   }
   // The arguments go as the caller wrote them, on one line.
-  Reply<Response> response = state_->request(
-      "tools/call",
-      wire::CallToolParams{.meta = std::nullopt,
-                           .arguments = {.text = verbatim::compact(arguments.text)},
-                           .input_responses = std::nullopt,
-                           .name = std::string{name},
-                           .request_state = std::nullopt},
-      name, options);
-  if (!response) {
-    return std::unexpected(std::move(response).error());
+  const std::string compacted = verbatim::compact(arguments.text);
+  for (bool retried = false;; retried = true) {
+    const std::optional<std::vector<HttpHeader>> headers =
+        state_->routed(name, compacted);
+    if (!headers.has_value()) {
+      return std::unexpected(
+          fault(Fault::protocol, join({"the tool ", name,
+                                       " has x-mcp-header marks that break the "
+                                       "protocol's rules, so it cannot be called"})));
+    }
+    Reply<Response> response =
+        state_->request("tools/call",
+                        wire::CallToolParams{.meta = std::nullopt,
+                                             .arguments = {.text = compacted},
+                                             .input_responses = std::nullopt,
+                                             .name = std::string{name},
+                                             .request_state = std::nullopt},
+                        name, options, *headers);
+    if (!response && !retried && response.error().fault == Fault::rejected &&
+        response.error().code == header_mismatch && state_->info.era == Era::modern) {
+      // The tool's schema may have changed since the client listed it: its
+      // marks are read again, and the call is sent once more.
+      const Reply<std::vector<Tool>> listed = list_tools(
+          {.progress = {}, .stop = options.stop, .timeout = options.timeout});
+      if (listed) {
+        continue;
+      }
+    }
+    if (!response) {
+      return std::unexpected(std::move(response).error());
+    }
+    return read_tool_result(*response);
   }
-  return read_tool_result(*response);
 }
 
 namespace detail {

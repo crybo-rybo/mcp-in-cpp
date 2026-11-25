@@ -4,8 +4,8 @@
 ///
 /// mcp::Client speaks the protocol and a Channel moves its messages. A
 /// transport implements Channel alone, and the client calls it; the channel
-/// hands what the server sends to the client's Incoming. <mcp/client.hpp> has
-/// the channels this library provides.
+/// hands what the server sends to the client's Incoming. <mcp/client.hpp> and
+/// <mcp/http_client.hpp> have the channels this library provides.
 #pragma once
 
 #include <cstdint>
@@ -54,6 +54,8 @@ struct ClientError {
   /// message, and for Fault::tool the tool's text.
   std::string message{};
   /// The `data` of a JSON-RPC error, as the server wrote it, when it had one.
+  /// For Fault::unauthorized over HTTP, the `WWW-Authenticate` challenge as a
+  /// JSON string, when the server sent one.
   std::optional<scrydantic::Json> data{};
 };
 

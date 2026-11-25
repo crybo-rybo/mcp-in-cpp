@@ -1,5 +1,30 @@
-# The scored scenarios of 2025-11-25 that the fixture does not pass, each for a
-# feature the library does not have yet. The suite fails when one of these
-# starts to pass, so the list only shrinks. It is empty: every scored scenario
-# passes.
+# The scored scenarios of 2025-11-25 that the library does not pass, each for a
+# feature it does not have yet. The suite fails when one of these starts to
+# pass, so the list only shrinks.
+#
+# The server (the fixture) passes every scored scenario.
 server: []
+# The client (tests/conformance/client.cpp).
+client:
+  # The standalone GET stream of a session, and resuming a stream through it
+  # with Last-Event-ID, which come with change subscriptions.
+  - sse-retry
+  # The scenario's server sends elicitation/create on the standalone GET
+  # stream rather than on the stream of the tool call, so the client needs
+  # that stream to be asked. The defaults themselves are filled in.
+  - elicitation-sep1034-client-defaults
+  # OAuth, which a later slice adds. A 401 fails with Fault::unauthorized.
+  - auth/metadata-default
+  - auth/metadata-var1
+  - auth/metadata-var2
+  - auth/metadata-var3
+  - auth/basic-cimd
+  - auth/scope-from-www-authenticate
+  - auth/scope-from-scopes-supported
+  - auth/scope-omitted-when-undefined
+  - auth/scope-step-up
+  - auth/scope-retry-limit
+  - auth/token-endpoint-auth-basic
+  - auth/token-endpoint-auth-post
+  - auth/token-endpoint-auth-none
+  - auth/pre-registration
