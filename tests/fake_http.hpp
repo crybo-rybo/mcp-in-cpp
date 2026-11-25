@@ -211,10 +211,21 @@ public:
   // Waits for the `count`th request of this JSON-RPC method.
   [[nodiscard]] std::optional<Request> await_rpc(const std::string_view method,
                                                  const std::size_t count = 1) const {
-    std::size_t seen = 0;
-    return await([&seen, method, count](const Request& request) {
-      return request.rpc() == method && ++seen == count;
+    std::unique_lock lock{mutex_};
+    std::optional<Request> found;
+    changed_.wait_for(lock, patience, [&] {
+      // Counted afresh each time: the wait looks at every request again
+      // whenever one comes.
+      std::size_t seen = 0;
+      for (const Request& request : requests_) {
+        if (request.rpc() == method && ++seen == count) {
+          found = request;
+          return true;
+        }
+      }
+      return false;
     });
+    return found;
   }
 
 private:
