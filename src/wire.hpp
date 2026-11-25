@@ -1,11 +1,14 @@
 // The protocol's own messages, as the plain structs Scrydantic encodes. Each is
-// named as the MCP schema names it. They are written, never read: a request is
+// named as the MCP schema names it. They are written, never read: a message is
 // read through a JsonView, because its envelope decides what the rest must be.
 #pragma once
 
 #include <cstdint>
+#include <map>
+#include <mcp/ask.hpp>
 #include <mcp/binding.hpp>
 #include <mcp/content.hpp>
+#include <mcp/context.hpp>
 #include <optional>
 #include <scrydantic/scrydantic.hpp>
 #include <string>
@@ -230,6 +233,141 @@ struct NoNotifications {};
 struct SubscriptionAcknowledged {
   [[= name{"_meta"}]] SubscriptionMeta meta;
   NoNotifications notifications;
+};
+
+// What a client sends.
+
+// The capabilities a client declares: one for each handler it has, in the
+// same shape in every revision.
+struct FormCapability {};
+struct[[= skip_null]] ElicitationCapability {
+  std::optional<FormCapability> form;
+};
+struct RootsCapability {};
+struct SamplingCapability {};
+
+struct[[= skip_null]] ClientCapabilities {
+  std::optional<ElicitationCapability> elicitation;
+  std::optional<RootsCapability> roots;
+  std::optional<SamplingCapability> sampling;
+};
+
+// The `_meta` of a client's request. Under 2026-07-28 it carries the protocol
+// fields on every request; under a handshake revision, only a progress token.
+struct[[= skip_null]] RequestMeta {
+  [[= name{
+      "io.modelcontextprotocol/clientCapabilities"}]] std::optional<ClientCapabilities>
+      client_capabilities;
+  [[= name{"io.modelcontextprotocol/clientInfo"}]] std::optional<Implementation>
+      client_info;
+  [[= name{"io.modelcontextprotocol/logLevel"}]] std::optional<mcp::LogLevel> log_level;
+  [[= name{"io.modelcontextprotocol/protocolVersion"}]] std::optional<std::string>
+      protocol_version;
+  [[= name{"progressToken"}]] std::optional<std::uint64_t> progress_token;
+};
+
+// The params of a request that has nothing but its `_meta`, such as
+// `server/discover` and `ping`.
+struct[[= skip_null]] RequestParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+};
+
+// The params of a list, such as `tools/list`.
+struct[[= skip_null]] ListParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  std::optional<std::string> cursor;
+};
+
+// The params of tools/call. Under 2026-07-28 a call sent again after
+// `input_required` carries the answers, and the server's `requestState` as the
+// JSON text the server wrote.
+struct[[ = rename_all{camel_case}, = skip_null ]] CallToolParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  Json arguments;
+  std::optional<Json> input_responses;
+  std::string name;
+  std::optional<Json> request_state;
+};
+
+// The params of resources/read, which under 2026-07-28 may be sent again after
+// `input_required`, as tools/call is.
+struct[[ = rename_all{camel_case}, = skip_null ]] ReadResourceParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  std::optional<Json> input_responses;
+  std::optional<Json> request_state;
+  std::string uri;
+};
+
+// The params of prompts/get: the arguments are strings by name, and left out
+// when there are none.
+struct[[ = rename_all{camel_case}, = skip_null ]] GetPromptParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  std::optional<std::map<std::string, std::string>> arguments;
+  std::optional<Json> input_responses;
+  std::string name;
+  std::optional<Json> request_state;
+};
+
+// What completion/complete completes: a prompt's argument by the prompt's
+// name, or a variable of a resource template by the template.
+struct[[= skip_null]] CompletionReference {
+  std::optional<std::string> name;
+  std::string type;
+  std::optional<std::string> uri;
+};
+
+struct CompletionArgument {
+  std::string name;
+  std::string value;
+};
+
+struct CompletionContext {
+  std::map<std::string, std::string> arguments;
+};
+
+struct[[= skip_null]] CompleteParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  CompletionArgument argument;
+  std::optional<CompletionContext> context;
+  CompletionReference ref;
+};
+
+// The params of logging/setLevel, before 2026-07-28.
+struct[[= skip_null]] SetLevelParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  mcp::LogLevel level{};
+};
+
+struct[[ = rename_all{camel_case}, = skip_null ]] InitializeParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  ClientCapabilities capabilities;
+  Implementation client_info;
+  std::string protocol_version;
+};
+
+// What a client answers to elicitation/create.
+struct[[= skip_null]] ElicitResult {
+  mcp::Action action{};
+  std::optional<Json> content;
+};
+
+// What a client answers to sampling/createMessage. `content` is one block, or
+// since 2025-11-25 a list of them.
+struct[[ = rename_all{camel_case}, = skip_null ]] CreateMessageResult {
+  Json content;
+  std::string model;
+  mcp::Role role{};
+  std::optional<std::string> stop_reason;
+};
+
+// What a client answers to roots/list.
+struct ListRootsResult {
+  std::vector<mcp::Root> roots;
+};
+
+struct[[= rename_all{camel_case}]] CancelledParams {
+  std::string reason;
+  std::uint64_t request_id{};
 };
 
 } // namespace mcp::wire

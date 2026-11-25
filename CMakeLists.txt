@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.30)
 
 project(
   mcp-in-cpp
-  VERSION 0.1.0
+  VERSION 0.2.0
   DESCRIPTION "A reflection-first MCP server library for C++26"
   LANGUAGES CXX
 )
@@ -100,13 +100,22 @@ endif()
 add_library(
   mcp
   STATIC
+  src/answer.cpp
   src/ask.cpp
   src/binding.cpp
+  src/client.cpp
   src/content.cpp
+  src/dispatcher.cpp
+  src/features.cpp
   src/http.cpp
+  src/http_channel.cpp
+  src/launch.cpp
+  src/loopback.cpp
+  src/routing.cpp
   src/server.cpp
   src/sha256.cpp
   src/stdio.cpp
+  src/stdio_client.cpp
 )
 add_library(mcp::mcp ALIAS mcp)
 file(GLOB MCP_PUBLIC_HEADERS CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/include/mcp/*.hpp")
