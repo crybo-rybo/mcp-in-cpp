@@ -1,7 +1,9 @@
+#include "answer.hpp"
 #include "jsonrpc.hpp"
 #include "verbatim.hpp"
 #include "wire.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -12,6 +14,8 @@
 #include <expected>
 #include <functional>
 #include <limits>
+#include <list>
+#include <mcp/ask.hpp>
 #include <mcp/channel.hpp>
 #include <mcp/client.hpp>
 #include <mcp/context.hpp>
@@ -22,6 +26,9 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -50,16 +57,24 @@ constexpr std::size_t max_pages = 1000;
 // The error of an HTTP request whose headers do not match its body.
 constexpr int header_mismatch = -32020;
 
-// The time `span` from now, or the end of time for a span that reaches past
-// it.
-[[nodiscard]] Clock::time_point from_now(const std::chrono::milliseconds span) {
-  const Clock::time_point now = Clock::now();
-  if (span >= std::chrono::duration_cast<std::chrono::milliseconds>(
-                  Clock::time_point::max() - now)) {
+// The time `span` after `start`, or the end of time for a span that reaches
+// past it.
+template <typename Span>
+[[nodiscard]] Clock::time_point later(const Clock::time_point start, const Span span) {
+  if (start == Clock::time_point::max() ||
+      span >= std::chrono::duration_cast<Span>(Clock::time_point::max() - start)) {
     return Clock::time_point::max();
   }
-  return now + span;
+  return start + span;
 }
+
+[[nodiscard]] Clock::time_point from_now(const std::chrono::milliseconds span) {
+  return later(Clock::now(), span);
+}
+
+// The most requests of a server's that the client answers at once, each on a
+// thread of its own. A server that asks more is told the client is busy.
+constexpr std::size_t most_answering = 32;
 
 [[nodiscard]] ClientError fault(const Fault kind, std::string message) {
   return {
@@ -145,9 +160,96 @@ struct Pending {
   // How many of its progress reports are being delivered now.
   int reporting{};
   // The time limit, zero for none, and when it runs out. A progress report
-  // moves the deadline.
+  // moves the deadline, and a handler that runs moves it on by as long as it
+  // ran.
   std::chrono::milliseconds limit{};
   Clock::time_point deadline{};
+};
+
+// The threads on which a client answers the requests of a handshake server,
+// one for each request, so that a handler that takes minutes holds up neither
+// the channel nor the other requests.
+class Helpers {
+public:
+  Helpers() = default;
+  Helpers(const Helpers&) = delete;
+  Helpers& operator=(const Helpers&) = delete;
+  ~Helpers() { stop(); }
+
+  // Runs `work` on a thread of its own. Returns false, without running it,
+  // once stop() has begun, when `most_answering` threads run already, or when
+  // no thread can be started.
+  bool start(std::function<void()> work) {
+    const std::scoped_lock lock{mutex_};
+    // A thread that has ended is joined before another starts, so that the
+    // threads of a long session do not pile up.
+    for (const auto ended : ended_) {
+      ended->join();
+      running_.erase(ended);
+    }
+    ended_.clear();
+    if (stopping_ || running_.size() >= most_answering) {
+      return false;
+    }
+    const auto slot = running_.emplace(running_.end());
+    try {
+      *slot = std::thread{[this, slot, work = std::move(work)] {
+        work();
+        const std::scoped_lock done{mutex_};
+        if (!stopping_) {
+          ended_.push_back(slot);
+        }
+      }};
+    } catch (const std::system_error&) {
+      running_.erase(slot);
+      return false;
+    }
+    return true;
+  }
+
+  // Waits for every thread to end. None starts after.
+  void stop() {
+    std::list<std::thread> running;
+    {
+      const std::scoped_lock lock{mutex_};
+      stopping_ = true;
+      running = std::move(running_);
+      ended_.clear();
+    }
+    for (std::thread& thread : running) {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  }
+
+private:
+  std::mutex mutex_;
+  bool stopping_{};
+  std::list<std::thread> running_;
+  std::vector<std::list<std::thread>::iterator> ended_;
+};
+
+// What a result of `input_required` asks: each question with its key, as the
+// method and the params the server wrote, and the server's requestState as
+// the JSON text it wrote, if it sent one.
+struct Question {
+  std::string key;
+  std::string method;
+  std::string params;
+};
+
+struct Inputs {
+  std::vector<Question> questions;
+  std::optional<std::string> state;
+};
+
+// Whether a request's params can carry the answers of `input_required`: those
+// of tools/call, prompts/get and resources/read.
+template <typename Params>
+concept takes_input = requires(Params params) {
+  params.input_responses = std::optional<Json>{};
+  params.request_state = std::optional<Json>{};
 };
 
 } // namespace
@@ -173,7 +275,8 @@ struct Client::State final : Incoming {
   Reply<Response> request(std::string_view method, Params params, std::string_view name,
                           const CallOptions& call);
 
-  // Ends the client: every waiting call fails, and the channel closes.
+  // Ends the client: every waiting call fails, the handlers that run return,
+  // and the channel closes.
   void shutdown();
 
   std::unique_ptr<Channel> channel;
@@ -192,6 +295,28 @@ private:
 
   [[nodiscard]] Revision revision() const;
   [[nodiscard]] std::chrono::milliseconds limit_of(const CallOptions& call) const;
+  // What the client declares: a capability for each handler it has.
+  [[nodiscard]] wire::ClientCapabilities capabilities() const;
+
+  // Starts the time of a request again from now, or while a handler runs
+  // from when the first of them began, which resume() moves on. Takes
+  // mutex_.
+  void restart_clock(Pending& pending) const;
+  // While a handler runs, no waiting call's time runs.
+  void pause();
+  void resume();
+  class Paused;
+
+  // Answers one question of the server's with the handler its method names.
+  answer::Answered<std::string>
+  answer_question(std::string_view method, std::string_view params, Revision revision);
+  // Answers the questions of one round of input_required, as the JSON text
+  // of its inputResponses.
+  Reply<Json> answer_round(const Inputs& inputs, std::string_view method,
+                           const std::stop_token& stop, Revision revision);
+  // Waits a little before a round that answers nothing, unless the caller
+  // stops the call. Returns whether it did.
+  bool rest(std::chrono::milliseconds span, const std::stop_token& stop);
 
   // Sends a request without waiting for it.
   template <typename Params>
@@ -246,7 +371,8 @@ private:
 
   void answered(std::string_view text, const JsonView& document);
   void notified(const JsonView& document, std::string_view method);
-  void requested(std::string_view method, const JsonView& id);
+  void requested(std::string_view text, const JsonView& document,
+                 std::string_view method, const JsonView& id);
   // Sends one notification or response, unless the client is closed.
   void post(std::string_view message, std::string_view method);
 
@@ -257,6 +383,10 @@ private:
   std::optional<ClientError> gone_;
   Revision revision_{};
   std::atomic<std::uint64_t> next_id_{0};
+  // How many handlers run, and since when the first of them has run.
+  std::size_t pauses_{};
+  Clock::time_point paused_since_{};
+  Helpers helpers_;
 };
 
 namespace {
@@ -322,12 +452,69 @@ namespace {
   }
   if (type->string() == "input_required") {
     return std::unexpected(fault(
-        Fault::protocol, "the server asks for input, which this client cannot give"));
+        Fault::protocol, "the server asks for input on a request that takes none"));
   }
   return std::unexpected(
       fault(Fault::protocol,
             join({"the server's result has a resultType this client does not know: ",
                   type->to_json().text})));
+}
+
+[[nodiscard]] ClientError malformed_input(const std::string_view why) {
+  return fault(Fault::protocol,
+               join({"the server's input_required result is not valid: ", why}));
+}
+
+// What a modern result asks of the client: nothing when it is complete, or
+// the questions and the state of `input_required`.
+[[nodiscard]] Reply<std::optional<Inputs>> inputs_of(const Response& response) {
+  const std::optional<JsonView> type = response.result.find("resultType");
+  if (!type.has_value() || type->string() != "input_required") {
+    if (Reply<void> done = complete(response); !done) {
+      return std::unexpected(std::move(done).error());
+    }
+    return std::nullopt;
+  }
+  Inputs inputs;
+  const std::optional<JsonView> requests = response.result.find("inputRequests");
+  const std::optional<std::string_view> written =
+      verbatim::member(response.text, "inputRequests");
+  if (requests.has_value()) {
+    if (requests->kind() != JsonKind::object || !written.has_value()) {
+      return std::unexpected(malformed_input("inputRequests is not an object"));
+    }
+    for (std::size_t index = 0; index < requests->size(); ++index) {
+      const std::string_view key = requests->key_at(index).value_or("");
+      const JsonView request = *requests->find(key);
+      const std::optional<std::string_view> method =
+          is_object(request) ? text_of(request, "method") : std::nullopt;
+      const std::optional<JsonView> params =
+          method.has_value() ? request.find("params") : std::nullopt;
+      if (!method.has_value() || (params.has_value() && !is_object(params))) {
+        return std::unexpected(
+            malformed_input(join({"inputRequests[", scrydantic::escape_json_string(key),
+                                  "] needs a method and params that are an object"})));
+      }
+      const std::optional<std::string_view> raw = verbatim::member(*written, key);
+      const std::optional<std::string_view> raw_params =
+          raw.has_value() ? verbatim::member(*raw, "params") : std::nullopt;
+      inputs.questions.push_back(
+          Question{.key = std::string{key},
+                   .method = std::string{*method},
+                   .params = std::string{raw_params.value_or("{}")}});
+    }
+  }
+  if (const std::optional<JsonView> state = response.result.find("requestState")) {
+    if (state->kind() != JsonKind::string) {
+      return std::unexpected(malformed_input("requestState is not a string"));
+    }
+    // The state goes back exactly as the server wrote it.
+    inputs.state = std::string{*verbatim::member(response.text, "requestState")};
+  }
+  if (inputs.questions.empty() && !inputs.state.has_value()) {
+    return std::unexpected(malformed_input("it asks nothing and has no requestState"));
+  }
+  return inputs;
 }
 
 [[nodiscard]] std::optional<std::uint64_t> id_number(const std::string_view text) {
@@ -351,6 +538,60 @@ std::chrono::milliseconds Client::State::limit_of(const CallOptions& call) const
   return limit.count() < 0 ? std::chrono::milliseconds{0} : limit;
 }
 
+wire::ClientCapabilities Client::State::capabilities() const {
+  wire::ClientCapabilities declared{};
+  if (options.elicitation) {
+    // Form mode: the client does not open URLs.
+    declared.elicitation = wire::ElicitationCapability{.form = wire::FormCapability{}};
+  }
+  if (options.roots) {
+    // The client never says its roots changed, so it does not declare
+    // listChanged.
+    declared.roots = wire::RootsCapability{};
+  }
+  if (options.sampling) {
+    declared.sampling = wire::SamplingCapability{};
+  }
+  return declared;
+}
+
+void Client::State::restart_clock(Pending& pending) const {
+  pending.deadline = later(pauses_ > 0 ? paused_since_ : Clock::now(), pending.limit);
+}
+
+void Client::State::pause() {
+  const std::scoped_lock lock{mutex_};
+  if (pauses_++ == 0) {
+    paused_since_ = Clock::now();
+  }
+}
+
+void Client::State::resume() {
+  {
+    const std::scoped_lock lock{mutex_};
+    if (--pauses_ == 0) {
+      // Every waiting call gets back the time it waited while handlers ran.
+      const Clock::duration paused = Clock::now() - paused_since_;
+      for (auto& [id, pending] : pending_) {
+        pending->deadline = later(pending->deadline, paused);
+      }
+    }
+  }
+  changed_.notify_all();
+}
+
+// Pauses the time of waiting calls while it lives.
+class Client::State::Paused {
+public:
+  explicit Paused(State& state) : state_{&state} { state_->pause(); }
+  Paused(const Paused&) = delete;
+  Paused& operator=(const Paused&) = delete;
+  ~Paused() { state_->resume(); }
+
+private:
+  State* state_;
+};
+
 template <typename Params>
 Reply<std::shared_ptr<Pending>>
 Client::State::start(const std::string_view method, Params params,
@@ -360,7 +601,7 @@ Client::State::start(const std::string_view method, Params params,
   const std::string id_text = std::to_string(id);
   wire::RequestMeta meta{};
   if (revision.modern) {
-    meta.client_capabilities = wire::ClientCapabilities{};
+    meta.client_capabilities = capabilities();
     meta.client_info =
         wire::Implementation{.name = options.name, .version = options.version};
     meta.protocol_version = std::string{revision.version};
@@ -384,12 +625,12 @@ Client::State::start(const std::string_view method, Params params,
   pending->id = id;
   pending->progress = call.progress ? &call.progress : nullptr;
   pending->limit = limit_of(call);
-  pending->deadline = from_now(pending->limit);
   {
     const std::scoped_lock lock{mutex_};
     if (gone_.has_value()) {
       return std::unexpected(*gone_);
     }
+    restart_clock(*pending);
     pending_.emplace(id, pending);
   }
   const Reply<void> sent = channel->send(Outgoing{.message = message,
@@ -417,20 +658,27 @@ Client::State::wait(Pending& pending, const std::stop_token& stop,
     if (stop.stop_requested()) {
       return Waited::cancelled;
     }
-    if (pending.limit.count() > 0 && now >= pending.deadline) {
+    // While a handler runs, the time does not.
+    const bool paused = pauses_ > 0;
+    const bool limited = pending.limit.count() > 0 && !paused;
+    if (limited && now >= pending.deadline) {
       return Waited::timeout;
     }
     if (until.has_value() && now >= *until) {
       return Waited::until;
     }
     std::optional<Clock::time_point> wake = until;
-    if (pending.limit.count() > 0 && (!wake.has_value() || pending.deadline < *wake)) {
+    if (limited && (!wake.has_value() || pending.deadline < *wake)) {
       wake = pending.deadline;
     }
+    // A handler that begins or ends changes how long to wait.
+    const auto woken = [this, &pending, paused] {
+      return pending.done || (pauses_ > 0) != paused;
+    };
     if (wake.has_value() && *wake != Clock::time_point::max()) {
-      changed_.wait_until(lock, stop, *wake, [&pending] { return pending.done; });
+      changed_.wait_until(lock, stop, *wake, woken);
     } else {
-      changed_.wait(lock, stop, [&pending] { return pending.done; });
+      changed_.wait(lock, stop, woken);
     }
   }
 }
@@ -522,22 +770,159 @@ template <typename Params>
 Reply<Response> Client::State::request(const std::string_view method, Params params,
                                        const std::string_view name,
                                        const CallOptions& call) {
-  if (call.stop.stop_requested()) {
+  const auto cancelled = [method] {
     return std::unexpected(fault(Fault::cancelled, join({method, " was cancelled"})));
+  };
+  if (call.stop.stop_requested()) {
+    return cancelled();
   }
   const Revision sent_as = revision();
-  Reply<std::shared_ptr<Pending>> pending =
-      start(method, std::move(params), name, call, sent_as);
-  if (!pending) {
-    return std::unexpected(std::move(pending).error());
-  }
-  Reply<Response> response = finish(*pending, method, call.stop);
-  if (response && sent_as.modern) {
-    if (Reply<void> done = complete(*response); !done) {
-      return std::unexpected(std::move(done).error());
+  // How long to wait before a round that answers nothing, which a server
+  // sends to have the request again later.
+  constexpr std::chrono::milliseconds first_rest{50};
+  constexpr std::chrono::milliseconds longest_rest{250};
+  std::chrono::milliseconds rest_span = first_rest;
+  for (std::size_t round = 0;; ++round) {
+    // Each round is a request of its own, with an id of its own.
+    Reply<std::shared_ptr<Pending>> pending =
+        start(method, params, name, call, sent_as);
+    if (!pending) {
+      return std::unexpected(std::move(pending).error());
+    }
+    Reply<Response> response = finish(*pending, method, call.stop);
+    if (!response || !sent_as.modern) {
+      return response;
+    }
+    Reply<std::optional<Inputs>> asked = inputs_of(*response);
+    if (!asked) {
+      return std::unexpected(std::move(asked).error());
+    }
+    if (!asked->has_value()) {
+      return response;
+    }
+    if constexpr (!takes_input<Params>) {
+      return std::unexpected(
+          fault(Fault::protocol, join({"the server asks for input on ", method,
+                                       ", which the protocol does not allow"})));
+    } else {
+      if (round >= options.input_rounds) {
+        return std::unexpected(
+            fault(Fault::protocol, join({"the server still asks for input after ",
+                                         std::to_string(round), " rounds"})));
+      }
+      const Inputs& inputs = **asked;
+      if (inputs.questions.empty()) {
+        if (!rest(rest_span, call.stop)) {
+          return cancelled();
+        }
+        rest_span = std::min(rest_span * 2, longest_rest);
+      } else {
+        rest_span = first_rest;
+      }
+      Reply<Json> answers = answer_round(inputs, method, call.stop, sent_as);
+      if (!answers) {
+        return std::unexpected(std::move(answers).error());
+      }
+      if (call.stop.stop_requested()) {
+        return cancelled();
+      }
+      params.input_responses =
+          inputs.questions.empty() ? std::nullopt : std::optional{std::move(*answers)};
+      // Echoed exactly, and left out when the server sent none.
+      params.request_state = inputs.state.has_value()
+                                 ? std::optional{Json{.text = *inputs.state}}
+                                 : std::nullopt;
     }
   }
-  return response;
+}
+
+bool Client::State::rest(const std::chrono::milliseconds span,
+                         const std::stop_token& stop) {
+  std::unique_lock lock{mutex_};
+  // Nothing wakes it but the caller's stop, or the client's end.
+  changed_.wait_for(lock, stop, span, [this] { return gone_.has_value(); });
+  return !stop.stop_requested();
+}
+
+Reply<Json> Client::State::answer_round(const Inputs& inputs,
+                                        const std::string_view method,
+                                        const std::stop_token& stop,
+                                        const Revision revision) {
+  std::string responses{"{"};
+  for (const Question& question : inputs.questions) {
+    if (stop.stop_requested()) {
+      return std::unexpected(fault(Fault::cancelled, join({method, " was cancelled"})));
+    }
+    answer::Answered<std::string> answered =
+        answer_question(question.method, question.params, revision);
+    if (!answered) {
+      return std::unexpected(fault(answered.error().fault, answered.error().reason));
+    }
+    if (responses.size() > 1) {
+      responses += ',';
+    }
+    responses += scrydantic::escape_json_string(question.key);
+    responses += ':';
+    responses += *answered;
+  }
+  responses += '}';
+  return Json{.text = std::move(responses)};
+}
+
+answer::Answered<std::string>
+Client::State::answer_question(const std::string_view method,
+                               const std::string_view params, const Revision revision) {
+  // Runs a handler while the time of waiting calls stands still. What it
+  // throws is the client's own failure, which the server is not told of.
+  const auto run = [this](const std::string_view handler, auto&& function)
+      -> answer::Answered<std::invoke_result_t<decltype(function)>> {
+    try {
+      const Paused paused{*this};
+      return answer::Answered<std::invoke_result_t<decltype(function)>>{std::in_place,
+                                                                        function()};
+    } catch (const std::exception& error) {
+      return std::unexpected(answer::threw(handler, error.what()));
+    } catch (...) {
+      return std::unexpected(
+          answer::threw(handler, "an exception that is not a std::exception"));
+    }
+  };
+  if (method == "elicitation/create" && options.elicitation) {
+    answer::Answered<FormRequest> form = answer::read_form(params);
+    if (!form) {
+      return std::unexpected(std::move(form).error());
+    }
+    answer::Answered<Answer<Json>> given =
+        run("elicitation", [this, &form] { return options.elicitation(*form); });
+    if (!given) {
+      return std::unexpected(std::move(given).error());
+    }
+    return answer::write_form(*given, form->schema.text);
+  }
+  if (method == "sampling/createMessage" && options.sampling) {
+    answer::Answered<SamplingRequest> request = answer::read_sampling(params);
+    if (!request) {
+      return std::unexpected(std::move(request).error());
+    }
+    answer::Answered<Result<SamplingResult>> sampled =
+        run("sampling", [this, &request] { return options.sampling(*request); });
+    if (!sampled) {
+      return std::unexpected(std::move(sampled).error());
+    }
+    if (!*sampled) {
+      return std::unexpected(answer::refused(sampled->error().message));
+    }
+    return answer::write_sampling(**sampled, revision.version != "2025-06-18");
+  }
+  if (method == "roots/list" && options.roots) {
+    answer::Answered<std::vector<Root>> roots =
+        run("roots", [this] { return options.roots(); });
+    if (!roots) {
+      return std::unexpected(std::move(roots).error());
+    }
+    return answer::write_roots(*roots);
+  }
+  return std::unexpected(answer::not_declared(method));
 }
 
 void Client::State::post(const std::string_view message,
@@ -572,6 +957,9 @@ void Client::State::shutdown() {
     pending_.clear();
   }
   changed_.notify_all();
+  // A handler that runs returns before the channel closes, so that nothing it
+  // sends meets a closed channel; whatever it calls fails at once now.
+  helpers_.stop();
   if (opened) {
     opened = false;
     channel->close();
@@ -594,7 +982,7 @@ void Client::State::message(const std::string_view text) {
     return;
   }
   if (const std::optional<JsonView> id = document->find("id")) {
-    requested(*name, *id);
+    requested(text, *document, *name, *id);
   } else {
     notified(*document, *name);
   }
@@ -668,7 +1056,7 @@ void Client::State::notified(const JsonView& document, const std::string_view me
     pending = found->second;
     receiver = pending->progress;
     // Work is happening, so the time starts again.
-    pending->deadline = from_now(pending->limit);
+    restart_clock(*pending);
     ++pending->reporting;
   }
   try {
@@ -685,19 +1073,55 @@ void Client::State::notified(const JsonView& document, const std::string_view me
   changed_.notify_all();
 }
 
-void Client::State::requested(const std::string_view method, const JsonView& id) {
+void Client::State::requested(const std::string_view text, const JsonView& document,
+                              const std::string_view method, const JsonView& id) {
   const JsonKind kind = id.kind();
   if (kind != JsonKind::string && kind != JsonKind::signed_integer &&
       kind != JsonKind::unsigned_integer) {
     return;
   }
   const std::string id_text = id.to_json().text;
-  // A legacy server may ping its client. The client declares no capability
-  // yet, so every other request is a method it does not have.
-  post(method == "ping" ? result_message(id_text, "{}")
-                        : error_message(id_text, wire::method_not_found,
-                                        join({"Method not found: ", method})),
-       {});
+  // A legacy server may ping its client.
+  if (method == "ping") {
+    post(result_message(id_text, "{}"), {});
+    return;
+  }
+  // Only a handshake session asks with requests of the server's own, once the
+  // handshake has agreed a revision. A question no handler is set for is a
+  // method the client does not have.
+  const Revision current = revision();
+  const bool handled = (method == "elicitation/create" && options.elicitation) ||
+                       (method == "sampling/createMessage" && options.sampling) ||
+                       (method == "roots/list" && options.roots);
+  if (current.modern || current.version.empty() || !handled) {
+    const answer::Refusal refusal = answer::not_declared(method);
+    post(error_message(id_text, refusal.code, refusal.message), {});
+    return;
+  }
+  const std::optional<JsonView> params = document.find("params");
+  if (params.has_value() && params->kind() != JsonKind::object) {
+    post(error_message(id_text, wire::invalid_params,
+                       "Invalid params: params must be an object"),
+         {});
+    return;
+  }
+  // The handler may take minutes and may call the client, so it runs on a
+  // thread of its own, never on the channel's.
+  const bool started = helpers_.start(
+      [this, id_text, method = std::string{method},
+       params = std::string{verbatim::member(text, "params").value_or("{}")}, current] {
+        const answer::Answered<std::string> answered =
+            answer_question(method, params, current);
+        post(answered ? result_message(id_text, *answered)
+                      : error_message(id_text, answered.error().code,
+                                      answered.error().message),
+             {});
+      });
+  if (!started) {
+    post(error_message(id_text, wire::internal_error,
+                       "Internal error: the client answers too many requests"),
+         {});
+  }
 }
 
 void Client::State::failed(const std::string_view id, ClientError why) {
@@ -745,7 +1169,7 @@ Reply<std::shared_ptr<Pending>> Client::State::start_initialize() {
   return start("initialize",
                wire::InitializeParams{
                    .meta = std::nullopt,
-                   .capabilities = {},
+                   .capabilities = capabilities(),
                    .client_info = {.name = options.name, .version = options.version},
                    .protocol_version = std::string{legacy_protocol_versions[0]}},
                {}, {}, Revision{});
@@ -1189,7 +1613,9 @@ Reply<ToolResult> Client::call_tool(const std::string_view name, const Json& arg
       "tools/call",
       wire::CallToolParams{.meta = std::nullopt,
                            .arguments = {.text = verbatim::compact(arguments.text)},
-                           .name = std::string{name}},
+                           .input_responses = std::nullopt,
+                           .name = std::string{name},
+                           .request_state = std::nullopt},
       name, options);
   if (!response) {
     return std::unexpected(std::move(response).error());

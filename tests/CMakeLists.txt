@@ -16,6 +16,7 @@ include(Catch)
 add_executable(
   mcp_tests
   ask_tests.cpp
+  client_ask_tests.cpp
   client_tests.cpp
   crypto_tests.cpp
   envelope_tests.cpp
@@ -23,6 +24,7 @@ add_executable(
   http_tests.cpp
   legacy_tests.cpp
   logging_tests.cpp
+  loopback_ask_tests.cpp
   loopback_tests.cpp
   modern_tests.cpp
   stdio_tests.cpp

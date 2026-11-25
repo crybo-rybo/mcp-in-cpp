@@ -22,6 +22,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
@@ -57,8 +58,53 @@ enum class Era : std::uint8_t {
   legacy,
 };
 
-/// How a client presents itself, and how long it waits. Several clients may
-/// share one.
+/// A form that a server asks the person using the client to fill in, for
+/// ClientOptions::elicitation.
+struct FormRequest {
+  /// What the form is for, as the server wrote it.
+  std::string message{};
+  /// The JSON Schema of the form, as the server wrote it: a flat object whose
+  /// properties are strings, numbers, booleans, and enumerations, each of which
+  /// may give a `default`. A `$ref` in it is never fetched.
+  scrydantic::Json schema{};
+};
+
+/// How a client presents itself, how long it waits, and how it answers what a
+/// server asks of it. Several clients may share one.
+///
+/// What a server may ask of its client while a call runs is answered by the
+/// handlers here: a form for the person (`elicitation`), a message from the
+/// client's model (`sampling`), and the client's roots (`roots`). Setting a
+/// handler declares its capability to the server, in either era, and one
+/// handler serves both. Under 2026-07-28 the server asks in a result of
+/// `input_required`: the client runs the handlers on the calling thread, in the
+/// order of the questions' keys, and sends the request again, as a new
+/// request, with their answers and the server's `requestState`. In a handshake
+/// session the server sends a request of its own, which the client answers on
+/// a thread it starts for that request; 2026-07-28 has no such requests, so a
+/// server of that revision that sends one is told -32601. A handler may take
+/// as long as a person takes: while any handler runs, the time limits of the
+/// client's waiting calls do not run. A handler may call the client, and may
+/// be called from several threads at once. Destroying the client waits for
+/// the handlers that are running to return.
+///
+/// When the client does not answer, the call goes on as the era allows. In a
+/// handshake session the server is told with a JSON-RPC error, and the call
+/// returns what the server then answers. The server is told:
+///
+/// - -32601 for a question no handler is set for, or a method the client does
+///   not know;
+/// - -32602 for a question that is not valid, such as a form in `url` mode or
+///   sampling with `tools`;
+/// - -32603 when a handler throws, or gives an answer that is not valid on the
+///   wire, such as accepted content that is not a JSON object;
+/// - -1, with the error's message, when the sampling handler returns an error.
+///
+/// Under 2026-07-28 a question is part of the call's result, so the client
+/// sends nothing more and the call fails: with Fault::unanswered when a handler
+/// throws or the sampling handler returns an error, and with Fault::protocol
+/// in each of the other cases, and for an `input_required` result that is not
+/// valid or that comes for a request that cannot take one.
 struct ClientOptions {
   /// The client's name, as the server shows and logs it.
   std::string name{};
@@ -75,6 +121,31 @@ struct ClientOptions {
   /// two succeeds first decides the era, so a server that starts slowly opens
   /// in its own era.
   std::chrono::milliseconds probe_timeout{std::chrono::seconds{5}};
+  /// Under 2026-07-28, how many rounds of `input_required` one call answers.
+  /// A server that asks once more fails the call with Fault::protocol, so that
+  /// it cannot hold a call for ever.
+  std::size_t input_rounds{10};
+  /// Shows the person a form and returns what they did with it. The client
+  /// declares elicitation in form mode when this is set.
+  ///
+  /// When the person accepts, the content must be a JSON object of the form's
+  /// fields. A field that it leaves out and whose property in the schema has a
+  /// `default` is sent with that default, as a form that starts with the
+  /// defaults filled in sends it. Content given with Action::decline or
+  /// Action::cancel is not sent.
+  std::function<Answer<scrydantic::Json>(const FormRequest& form)> elicitation{};
+  /// Asks the client's model for a message. The client declares sampling, but
+  /// not its `tools` or `context`, when this is set. An error refuses the
+  /// request, as a person who does not let the server use the model does.
+  ///
+  /// The request holds the members a SamplingRequest has; a message whose
+  /// content is a list of blocks comes as one message per block, in order.
+  /// The answer must have at least one block, each of them text, an image, or
+  /// a sound, and only one under 2025-06-18.
+  std::function<Result<SamplingResult>(const SamplingRequest& request)> sampling{};
+  /// Returns the client's roots, each a `file://` URI. The client declares
+  /// roots, without `listChanged`, when this is set.
+  std::function<std::vector<Root>()> roots{};
 };
 
 /// A report of how far a call has come, from `notifications/progress`.

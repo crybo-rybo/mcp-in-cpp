@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mcp/ask.hpp>
 #include <mcp/binding.hpp>
 #include <mcp/content.hpp>
 #include <optional>
@@ -234,9 +235,20 @@ struct SubscriptionAcknowledged {
 
 // What a client sends.
 
-// The capabilities a client declares. It has none of its own yet: it answers
-// no request of a server's.
-struct ClientCapabilities {};
+// The capabilities a client declares: one for each handler it has, in the
+// same shape in every revision.
+struct FormCapability {};
+struct[[= skip_null]] ElicitationCapability {
+  std::optional<FormCapability> form;
+};
+struct RootsCapability {};
+struct SamplingCapability {};
+
+struct[[= skip_null]] ClientCapabilities {
+  std::optional<ElicitationCapability> elicitation;
+  std::optional<RootsCapability> roots;
+  std::optional<SamplingCapability> sampling;
+};
 
 // The `_meta` of a client's request. Under 2026-07-28 it carries the protocol
 // fields on every request; under a handshake revision, only a progress token.
@@ -263,10 +275,15 @@ struct[[= skip_null]] ListParams {
   std::optional<std::string> cursor;
 };
 
-struct[[= skip_null]] CallToolParams {
+// The params of tools/call. Under 2026-07-28 a call sent again after
+// `input_required` carries the answers, and the server's `requestState` as the
+// JSON text the server wrote.
+struct[[ = rename_all{camel_case}, = skip_null ]] CallToolParams {
   [[= name{"_meta"}]] std::optional<RequestMeta> meta;
   Json arguments;
+  std::optional<Json> input_responses;
   std::string name;
+  std::optional<Json> request_state;
 };
 
 struct[[ = rename_all{camel_case}, = skip_null ]] InitializeParams {
@@ -274,6 +291,26 @@ struct[[ = rename_all{camel_case}, = skip_null ]] InitializeParams {
   ClientCapabilities capabilities;
   Implementation client_info;
   std::string protocol_version;
+};
+
+// What a client answers to elicitation/create.
+struct[[= skip_null]] ElicitResult {
+  mcp::Action action{};
+  std::optional<Json> content;
+};
+
+// What a client answers to sampling/createMessage. `content` is one block, or
+// since 2025-11-25 a list of them.
+struct[[ = rename_all{camel_case}, = skip_null ]] CreateMessageResult {
+  Json content;
+  std::string model;
+  mcp::Role role{};
+  std::optional<std::string> stop_reason;
+};
+
+// What a client answers to roots/list.
+struct ListRootsResult {
+  std::vector<mcp::Root> roots;
 };
 
 struct[[= rename_all{camel_case}]] CancelledParams {

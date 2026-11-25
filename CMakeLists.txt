@@ -100,6 +100,7 @@ endif()
 add_library(
   mcp
   STATIC
+  src/answer.cpp
   src/ask.cpp
   src/binding.cpp
   src/client.cpp

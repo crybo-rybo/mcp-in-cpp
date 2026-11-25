@@ -40,6 +40,9 @@ enum class Fault : std::uint8_t {
   mismatch,
   /// The server requires authorization (HTTP 401).
   unauthorized,
+  /// Under 2026-07-28, the server asked the client for input and one of the
+  /// client's own handlers threw or refused, so the call went no further.
+  unanswered,
 };
 
 /// What went wrong with a client's call.
