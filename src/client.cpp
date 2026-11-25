@@ -1668,6 +1668,22 @@ ClientError tool_failed(const ToolResult& result) {
   return fault(Fault::tool, text.empty() ? std::string{"the tool failed"} : text);
 }
 
+std::optional<Json> wrapped_result(const ToolResult& result) {
+  if (!result.structured_content.has_value()) {
+    return std::nullopt;
+  }
+  const std::string& text = result.structured_content->text;
+  const scrydantic::Result<JsonView> wrapper = JsonView::parse(text);
+  if (!wrapper || wrapper->kind() != JsonKind::object || wrapper->size() != 1) {
+    return std::nullopt;
+  }
+  const std::optional<std::string_view> value = verbatim::member(text, "result");
+  if (!value.has_value()) {
+    return std::nullopt;
+  }
+  return Json{.text = std::string{*value}};
+}
+
 ClientError mismatched(const scrydantic::Error& error) {
   return fault(Fault::mismatch,
                join({"the result does not fit the type: ", error.message}));

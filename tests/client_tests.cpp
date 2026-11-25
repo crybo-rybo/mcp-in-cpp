@@ -829,10 +829,21 @@ TEST_CASE("a typed call decodes the structured content, or else the text") {
   CHECK(client.call<std::string>("add", Arguments{}) == "spelled");
   answer = R"({"content":[{"type":"text","text":"42"}]})";
   CHECK(client.call<std::string>("add", Arguments{}) == "42");
+  // A value that a server wraps as {"result": value} is read as the value.
+  answer = R"({"content":[],"structuredContent":{"result":5}})";
+  CHECK(client.call<std::int32_t>("add", Arguments{}) == 5);
+  answer = R"({"content":[],"structuredContent":{"result":"five"}})";
+  CHECK(client.call<std::string>("add", Arguments{}) == "five");
+  answer = R"({"content":[],"structuredContent":{"result":[1,2]}})";
+  CHECK(client.call<std::vector<std::int32_t>>("add", Arguments{}) ==
+        std::vector<std::int32_t>{1, 2});
 
   for (const std::string_view mismatch :
        {R"({"content":[{"type":"text","text":"plain words"}]})",
         R"({"content":[],"structuredContent":"five"})", R"({"content":[]})",
+        R"({"content":[],"structuredContent":{"result":"five"}})",
+        R"({"content":[],"structuredContent":{"result":5,"other":1}})",
+        R"({"content":[],"structuredContent":{"value":5}})",
         R"({"content":[{"type":"text","text":"1"},{"type":"text","text":"2"}]})"}) {
     INFO(mismatch);
     answer = mismatch;

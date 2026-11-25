@@ -383,6 +383,9 @@ consteval std::meta::info call_value_of(const std::meta::info function) {
 // else the one text block, read as JSON. When `text` is set, the caller wants a
 // string, which a text block that is not a JSON string is as it is.
 [[nodiscard]] Reply<scrydantic::Json> typed_source(const ToolResult& result, bool text);
+// The value inside structured content of the form `{"result": value}`, as some
+// servers wrap a result that is not an object, or nothing for any other form.
+[[nodiscard]] std::optional<scrydantic::Json> wrapped_result(const ToolResult& result);
 
 // Whether a function carries an annotation of this type.
 consteval bool carries(const std::meta::info function,
@@ -507,9 +510,11 @@ public:
   /// The arguments are encoded as Scrydantic encodes them, and must make a JSON
   /// object. The result is decoded from the call's structured content, or else
   /// from its one text block read as JSON; a `std::string` result is the text
-  /// itself when it is not a JSON string. A tool's own failure is
-  /// Fault::tool with the tool's text, and a result that does not decode is
-  /// Fault::mismatch.
+  /// itself when it is not a JSON string. Structured content of the form
+  /// `{"result": value}`, as the official Python SDK's servers wrap a result
+  /// that is not an object, is read as the value when the type does not take
+  /// the wrapper itself. A tool's own failure is Fault::tool with the tool's
+  /// text, and a result that does not decode is Fault::mismatch.
   /// @tparam T The result's type: one Scrydantic decodes, mcp::Content for the
   /// blocks themselves, or void to ignore the result.
   template <typename T, typename Arguments>
@@ -538,6 +543,13 @@ public:
       }
       scrydantic::Result<T> value = scrydantic::decode<T>(*source);
       if (!value) {
+        // The value may be wrapped, when the type did not take the wrapper.
+        if (const std::optional<scrydantic::Json> wrapped =
+                detail::wrapped_result(*result)) {
+          if (scrydantic::Result<T> inner = scrydantic::decode<T>(*wrapped)) {
+            return std::move(*inner);
+          }
+        }
         return std::unexpected(detail::mismatched(value.error()));
       }
       return std::move(*value);

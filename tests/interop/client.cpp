@@ -163,6 +163,8 @@ void exercise(const mcp::Command& command, const Case& each) {
   check(tag, "a typed call's high", typed->high, 21.5);
   check(tag, "a wrapped result", client.call<Sum>("add", Terms{.a = 2, .b = 3})->result,
         5);
+  check(tag, "a wrapped result, read as its value",
+        client.call<std::int32_t>("add", Terms{.a = 2, .b = 3}).value_or(-1), 5);
 
   const mcp::Reply<mcp::ToolResult> refused = client.call_tool("refuse");
   check(tag, "a tool's error is a result", refused.has_value(), true);
