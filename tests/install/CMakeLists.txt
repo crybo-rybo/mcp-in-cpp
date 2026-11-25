@@ -6,7 +6,7 @@
 cmake_minimum_required(VERSION 3.30)
 project(mcp-consumer LANGUAGES CXX)
 
-find_package(mcp-in-cpp 0.1 REQUIRED)
+find_package(mcp-in-cpp 0.2 REQUIRED)
 
 add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE mcp::mcp)

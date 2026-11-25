@@ -173,7 +173,7 @@ cmake --install build/release --prefix /opt/mcp
 ```
 
 ```cmake
-find_package(mcp-in-cpp 0.1 REQUIRED)  # with /opt/mcp in CMAKE_PREFIX_PATH
+find_package(mcp-in-cpp 0.2 REQUIRED)  # with /opt/mcp in CMAKE_PREFIX_PATH
 target_link_libraries(my_server PRIVATE mcp::mcp)
 ```
 
@@ -185,7 +185,7 @@ include(FetchContent)
 FetchContent_Declare(
   mcp-in-cpp
   GIT_REPOSITORY https://github.com/crybo-rybo/mcp-in-cpp.git
-  GIT_TAG v0.1.0
+  GIT_TAG v0.2.0
 )
 FetchContent_MakeAvailable(mcp-in-cpp)
 target_link_libraries(my_server PRIVATE mcp::mcp)

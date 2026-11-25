@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.30)
 
 project(
   mcp-in-cpp
-  VERSION 0.1.0
+  VERSION 0.2.0
   DESCRIPTION "A reflection-first MCP server library for C++26"
   LANGUAGES CXX
 )

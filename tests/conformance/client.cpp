@@ -169,7 +169,7 @@ int main(const int argc, const char* const argv[]) {
   // A call gives up before the suite's own 30 seconds do, so that the client
   // says why.
   mcp::ClientOptions options{.name = "mcp-in-cpp-conformance",
-                             .version = "0.1.0",
+                             .version = "0.2.0",
                              .era = era_of(version),
                              .timeout = std::chrono::seconds{20}};
   options.elicitation = [&opened, &scenario](const mcp::FormRequest&) {
