@@ -1,5 +1,5 @@
 // The protocol's own messages, as the plain structs Scrydantic encodes. Each is
-// named as the MCP schema names it. They are written, never read: a request is
+// named as the MCP schema names it. They are written, never read: a message is
 // read through a JsonView, because its envelope decides what the rest must be.
 #pragma once
 
@@ -230,6 +230,55 @@ struct NoNotifications {};
 struct SubscriptionAcknowledged {
   [[= name{"_meta"}]] SubscriptionMeta meta;
   NoNotifications notifications;
+};
+
+// What a client sends.
+
+// The capabilities a client declares. It has none of its own yet: it answers
+// no request of a server's.
+struct ClientCapabilities {};
+
+// The `_meta` of a client's request. Under 2026-07-28 it carries the protocol
+// fields on every request; under a handshake revision, only a progress token.
+struct[[= skip_null]] RequestMeta {
+  [[= name{
+      "io.modelcontextprotocol/clientCapabilities"}]] std::optional<ClientCapabilities>
+      client_capabilities;
+  [[= name{"io.modelcontextprotocol/clientInfo"}]] std::optional<Implementation>
+      client_info;
+  [[= name{"io.modelcontextprotocol/protocolVersion"}]] std::optional<std::string>
+      protocol_version;
+  [[= name{"progressToken"}]] std::optional<std::uint64_t> progress_token;
+};
+
+// The params of a request that has nothing but its `_meta`, such as
+// `server/discover` and `ping`.
+struct[[= skip_null]] RequestParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+};
+
+// The params of a list, such as `tools/list`.
+struct[[= skip_null]] ListParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  std::optional<std::string> cursor;
+};
+
+struct[[= skip_null]] CallToolParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  Json arguments;
+  std::string name;
+};
+
+struct[[ = rename_all{camel_case}, = skip_null ]] InitializeParams {
+  [[= name{"_meta"}]] std::optional<RequestMeta> meta;
+  ClientCapabilities capabilities;
+  Implementation client_info;
+  std::string protocol_version;
+};
+
+struct[[= rename_all{camel_case}]] CancelledParams {
+  std::string reason;
+  std::uint64_t request_id{};
 };
 
 } // namespace mcp::wire

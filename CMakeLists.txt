@@ -102,8 +102,11 @@ add_library(
   STATIC
   src/ask.cpp
   src/binding.cpp
+  src/client.cpp
   src/content.cpp
+  src/dispatcher.cpp
   src/http.cpp
+  src/loopback.cpp
   src/server.cpp
   src/sha256.cpp
   src/stdio.cpp

@@ -1,5 +1,5 @@
 // The JSON-RPC envelopes, written by hand: the connection and the HTTP endpoint
-// both answer with them.
+// both answer with them, and the client sends them.
 #pragma once
 
 #include <initializer_list>
@@ -49,10 +49,22 @@ join(const std::initializer_list<std::string_view> parts) {
   return text;
 }
 
+// `params` is JSON text, or empty for a notification without them.
 [[nodiscard]] inline std::string notification_message(const std::string_view method,
                                                       const std::string_view params) {
+  if (params.empty()) {
+    return join({R"({"jsonrpc":"2.0","method":")", method, R"("})"});
+  }
   return join(
       {R"({"jsonrpc":"2.0","method":")", method, R"(","params":)", params, "}"});
+}
+
+// A request. `id` and `params` are JSON text, and `method` needs no escaping.
+[[nodiscard]] inline std::string request_message(const std::string_view id,
+                                                 const std::string_view method,
+                                                 const std::string_view params) {
+  return join({R"({"id":)", id, R"(,"jsonrpc":"2.0","method":")", method,
+               R"(","params":)", params, "}"});
 }
 
 } // namespace mcp::jsonrpc
